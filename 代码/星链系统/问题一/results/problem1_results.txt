@@ -1,0 +1,43 @@
+Problem 1 numerical verification report
+
+Constants
+---------
+Earth radius R = 6371.000 km
+Orbit altitude h = 550.000 km
+Antenna half-cone angle alpha = 40.460 deg
+Given ground coverage radius = 506.000 km
+
+Parameter interpretations
+-------------------------
+1) Given-radius interpretation:
+   theta = 4.550567 deg
+   ground radius = 506.000000 km
+   coverage area = 803938.085585 km^2
+   equivalent alpha = 41.562016 deg
+   same-plane along-track N_min = 40
+
+2) Half-cone-angle interpretation:
+   theta = 4.364469 deg
+   ground radius = 485.306780 km
+   coverage area = 739558.578667 km^2
+   alpha = 40.460000 deg
+   same-plane along-track N_min = 42
+
+Consistency difference
+----------------------
+Radius difference = 4.264 %
+Area difference = 8.705 %
+
+Conclusion
+----------
+Use the given 506 km ground-radius interpretation as the main numerical baseline.
+The same-plane along-track continuous coverage threshold is N = 40 under the main
+baseline. The half-cone-angle interpretation is reported only for parameter
+consistency; it is not used as a second main result in the figures.
+
+Representative sub-satellite track settings
+-------------------------------------------
+Inclination i = 50.000 deg
+Representative satellites per plane N = 40
+Orbit period T = 95.502 min
+Target latitude band = 30.0 deg N to 50.0 deg N

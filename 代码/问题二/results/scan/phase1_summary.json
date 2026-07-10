@@ -1,0 +1,29 @@
+{
+  "tag": "phase1",
+  "elapsed_s": 51.375274699996226,
+  "evaluated_count": 1000,
+  "feasible_found": false,
+  "grid_points": 396,
+  "time_steps": 121,
+  "best": {
+    "params": {
+      "planes": 3,
+      "sats_per_plane": 40,
+      "phase_factor": 0,
+      "inclination_deg": 52.0,
+      "raan0_deg": 0.0,
+      "u0_deg": 4.5,
+      "total_satellites": 120
+    },
+    "metrics": {
+      "coverage_rate_q1": 0.2547908799968171,
+      "coverage_rate_q2": 0.013217667228051205,
+      "avg_multiplicity": 0.26805113170129446,
+      "c_min": 0,
+      "max_gap_s": 16560.0,
+      "strict_double_time_rate": 0.0
+    },
+    "num_grid_points": 396,
+    "num_time_steps": 121
+  }
+}

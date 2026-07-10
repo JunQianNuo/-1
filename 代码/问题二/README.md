@@ -12,7 +12,9 @@
 | `test_q2_constellation.py` | 单元测试 |
 | `run_q2_smoke.py` | 最小 smoke run，用于确认模型链路可运行 |
 | `run_q2_single_search.py` | 问题二单重覆盖正式粗搜索脚本 |
+| `run_q2_scan.py` | 多阶段扫描：粗搜 → 中网格验证 → 细网格复核 → 二重覆盖 |
 | `results/` | CSV/JSON 结果输出目录 |
+| `results/scan/` | 多阶段扫描结果子目录 |
 | `figures/` | 图表输出目录 |
 
 ## 运行测试
@@ -62,6 +64,30 @@ python run_q2_single_search.py --lat-step 2 --time-step 180 --duration-hours 23.
 ```
 
 扩大搜索时应分阶段进行：先降低空间步长，再降低时间步长，最后取消候选数上限；每一阶段都比较 `c_min`、`C1`、`max_gap_s` 是否稳定。
+
+## 多阶段扫描
+
+```bash
+python run_q2_scan.py
+```
+
+默认配置：
+- Phase 1（粗搜）：网格 $3^\circ$、时间步长 $180\,\mathrm{s}$、S=40→150、倾角 $48.5^\circ\sim60^\circ$
+- Phase 2（中网格验证）：网格 $1^\circ$、时间步长 $60\,\mathrm{s}$，对 Phase 1 可行 S 验证
+- Phase 3（细网格复核）：网格 $0.5^\circ$、时间步长 $30\,\mathrm{s}$，最优候选复核
+- Phase 4（二重覆盖）：从 single 可行 S 开始，搜索 $\mathcal C_2^{\text{strict}}\ge 0.95$
+
+跳过二重覆盖搜索：
+
+```bash
+python run_q2_scan.py --skip-double
+```
+
+手动指定范围：
+
+```bash
+python run_q2_scan.py --single-start 40 --single-stop 120 --double-start 100 --double-stop 200
+```
 
 ## 模型口径
 

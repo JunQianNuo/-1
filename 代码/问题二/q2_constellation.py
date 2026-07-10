@@ -549,6 +549,89 @@ def search_single_coverage(
     )
 
 
+def _double_coverage_score(result: EvaluationResult) -> tuple:
+    """Ordering key for double-coverage searches.
+
+    Feasible candidates (strict_double_time_rate >= 0.95) are ranked above
+    infeasible ones.  Within the same feasibility class, prefer larger strict
+    double-time rate, larger average multiplicity, and smaller total satellites.
+    """
+
+    feasible = 1 if result.strict_double_time_rate >= 0.95 else 0
+    return (
+        feasible,
+        result.strict_double_time_rate,
+        result.avg_multiplicity,
+        result.coverage_rate_q2,
+        -result.params.total_satellites,
+    )
+
+
+def search_double_coverage(
+    lat_deg: np.ndarray,
+    lon_deg: np.ndarray,
+    times_s: np.ndarray,
+    start_total: int = 80,
+    stop_total: int = 85,
+    inclinations_deg: Iterable[float] = (49.0, 50.0, 51.0, 52.0, 53.0),
+    phase_resolution_deg: float = 10.0,
+    max_candidates_per_total: int | None = None,
+    stop_on_feasible: bool = True,
+    config: CoverageConfig | None = None,
+) -> SearchRunResult:
+    """Scale-increasing search for strict double-coverage (C2_strict >= 0.95).
+
+    This mirrors ``search_single_coverage`` but uses ``strict_double_time_rate``
+    as the feasibility criterion.  The start_total should typically be at least
+    the single-coverage feasible size (or the area lower bound of 80).
+    """
+
+    if start_total <= 0:
+        raise ValueError("start_total must be positive")
+    if stop_total < start_total:
+        raise ValueError("stop_total must be greater than or equal to start_total")
+
+    cfg = config or CoverageConfig()
+    records: list[dict] = []
+    best_result: EvaluationResult | None = None
+    best_score: tuple | None = None
+    first_feasible: EvaluationResult | None = None
+    evaluated_count = 0
+
+    for total in range(start_total, stop_total + 1):
+        for params in candidate_params_for_total(
+            total,
+            inclinations_deg=inclinations_deg,
+            phase_resolution_deg=phase_resolution_deg,
+            max_candidates=max_candidates_per_total,
+        ):
+            result = evaluate_constellation(params, lat_deg, lon_deg, times_s, cfg)
+            evaluated_count += 1
+            records.append(evaluation_record(result))
+
+            score = _double_coverage_score(result)
+            if best_score is None or score > best_score:
+                best_score = score
+                best_result = result
+
+            if result.strict_double_time_rate >= 0.95 and first_feasible is None:
+                first_feasible = result
+                if stop_on_feasible:
+                    return SearchRunResult(
+                        records=records,
+                        best_result=best_result,
+                        first_feasible=first_feasible,
+                        evaluated_count=evaluated_count,
+                    )
+
+    return SearchRunResult(
+        records=records,
+        best_result=best_result,
+        first_feasible=first_feasible,
+        evaluated_count=evaluated_count,
+    )
+
+
 def result_summary_dict(result: EvaluationResult) -> dict:
     params = asdict(result.params)
     params["total_satellites"] = result.params.total_satellites

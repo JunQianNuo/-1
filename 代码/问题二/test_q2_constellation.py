@@ -145,5 +145,64 @@ class SearchTests(unittest.TestCase):
             self.assertIn(key, first_record)
 
 
+class DoubleCoverageTests(unittest.TestCase):
+    def test_double_coverage_search_runs_and_returns_structure(self):
+        """Smoke: double-coverage search with minimal settings."""
+        search = q2.search_double_coverage(
+            lat_deg=np.array([0.0]),
+            lon_deg=np.array([0.0]),
+            times_s=np.array([0.0, 60.0]),
+            start_total=1,
+            stop_total=1,
+            inclinations_deg=[0.0],
+            phase_resolution_deg=360.0,
+            stop_on_feasible=False,
+        )
+        self.assertGreater(search.evaluated_count, 0)
+        self.assertIsNotNone(search.best_result)
+        self.assertGreaterEqual(search.best_result.strict_double_time_rate, 0.0)
+
+    def test_double_coverage_score_ranks_feasible_above_infeasible(self):
+        """A feasible candidate scores above any infeasible one."""
+
+        feasible = q2.EvaluationResult(
+            params=q2.ConstellationParams(2, 3, 0, 50),
+            counts=np.ones((2, 2), dtype=np.int16) * 3,
+            lat_deg=np.array([0.0, 0.0]),
+            lon_deg=np.array([0.0, 1.0]),
+            times_s=np.array([0.0, 1.0]),
+            weights=np.array([0.5, 0.5]),
+            metrics=q2.CoverageMetrics(
+                coverage_rate_q1=1.0,
+                coverage_rate_q2=1.0,
+                avg_multiplicity=3.0,
+                c_min=3,
+                max_gap_s=0.0,
+                strict_double_time_rate=1.0,
+            ),
+        )
+        infeasible = q2.EvaluationResult(
+            params=q2.ConstellationParams(1, 1, 0, 50),
+            counts=np.array([[0]], dtype=np.int16),
+            lat_deg=np.array([0.0]),
+            lon_deg=np.array([0.0]),
+            times_s=np.array([0.0]),
+            weights=np.array([1.0]),
+            metrics=q2.CoverageMetrics(
+                coverage_rate_q1=0.0,
+                coverage_rate_q2=0.0,
+                avg_multiplicity=0.0,
+                c_min=0,
+                max_gap_s=10.0,
+                strict_double_time_rate=0.0,
+            ),
+        )
+
+        self.assertGreater(
+            q2._double_coverage_score(feasible),
+            q2._double_coverage_score(infeasible),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

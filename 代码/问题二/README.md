@@ -58,9 +58,11 @@ python run_q2_fast_search.py
 默认流程：
 
 1. 使用 `evaluate_constellation_fast` 对候选星座做临界点—代表点快速评价；
-2. 内存中只保留 Top-K 快速候选，避免旧脚本 `all_records` 累积；
-3. 对 Top-K 中前若干候选调用 `q2_constellation.py` 的网格法复核；
-4. 输出快速候选表、复核候选表和摘要 JSON。
+2. 对同一总星数的因子对进行均衡抽样，优先测试接近平衡的多轨道面构型，避免 `M=1,N=S` 的顺序截断偏置；
+3. 搜索过程中流式追加写出候选记录，避免长跑超时后没有任何结果；
+4. 内存中只保留 Top-K 快速候选，避免旧脚本 `all_records` 累积；
+5. 对 Top-K 中前若干候选调用 `q2_constellation.py` 的网格法复核；
+6. 输出快速候选表、复核候选表和摘要 JSON。
 
 输出：
 
@@ -69,6 +71,8 @@ python run_q2_fast_search.py
 | `results/q2_fast_search_top_fast_candidates.csv` | 快速法筛出的 Top-K 候选 |
 | `results/q2_fast_search_verified_candidates.csv` | 经网格法复核的候选 |
 | `results/q2_fast_search_summary.json` | 搜索设置、最优快速候选、最优复核候选 |
+| `results/q2_fast_search_stream_fast_records.csv` | 搜索过程中逐条追加的快速评价记录，中断后仍可读取 |
+| `results/q2_fast_search_stream_verified_records.csv` | 搜索过程中逐条追加的网格复核记录 |
 
 小规模 smoke 示例：
 
@@ -77,6 +81,20 @@ python run_q2_fast_search.py --start-total 1 --stop-total 1 --inclinations 0 --p
 ```
 
 正式搜索时应逐步扩大：先增大 `--stop-total` 和 `--max-candidates-per-total`，再缩短 `--fast-time-step`，最后缩小 `--verify-grid-step` 和 `--verify-time-step`。最终可行性仍以复核表中的网格法指标为准。
+
+如果已有较大规模可行上界，例如 $S=1600$ 已经通过单重覆盖复核，则推荐从上界向下搜索，而不是从明显不可行的小规模向上搜索：
+
+```bash
+python run_q2_fast_search.py --start-total 1200 --stop-total 1600 --search-order desc --inclinations 50,53,55,58,60 --phase-resolution 30 --max-candidates-per-total 200 --keep-top-fast 50 --verify-top 5 --duration-hours 6 --fast-time-step 900 --verify-time-step 900 --verify-grid-step 6 --output-dir results/fast_search_S1600_down_coarse
+```
+
+说明：
+
+- `--search-order desc` 表示按 $1600,1599,\ldots,1200$ 的顺序搜索；
+- `--stop-if-min-count-below 1` 为默认值，表示某候选只要任一时间片最小覆盖重数小于 1，就提前停止该候选的快速评价；
+- 若需要完整统计每个候选全部时间片，可设置 `--stop-if-min-count-below -1` 关闭早停，但耗时会显著增加。
+
+可用 `--min-planes`、`--max-planes`、`--min-sats-per-plane`、`--max-sats-per-plane` 约束构型范围。例如若不希望测试单轨道面，可设置 `--min-planes 10`。
 
 ## 最小链路验证
 

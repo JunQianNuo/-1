@@ -1,0 +1,1964 @@
+diff --git "a/\344\273\243\347\240\201/\351\227\256\351\242\230\344\272\214/README_Q2_OPTIMIZED.md" "b/\344\273\243\347\240\201/\351\227\256\351\242\230\344\272\214/README_Q2_OPTIMIZED.md"
+new file mode 100644
+index 0000000..571c5dc
+--- /dev/null
++++ "b/\344\273\243\347\240\201/\351\227\256\351\242\230\344\272\214/README_Q2_OPTIMIZED.md"
+@@ -0,0 +1,94 @@
++# 问题二优化代码使用说明
++
++本目录新增的优化代码保留原有 `q2_constellation.py` 和
++`q2_fast_coverage.py` 作为基准，不会覆盖原实现。
++
++## 新增模块
++
++- `q2_search_space.py`：完整生成 `(M,N,F)`，并为每个离散结构分配相同的 Sobol 采样预算；
++- `q2_coverage_margin.py`：计算单重或多重覆盖的连续裕量；
++- `q2_kdtree_coverage.py`：使用三维单位球 KD 树查找邻近卫星对和临界点附近卫星；
++- `q2_active_set.py`：活动约束集、Powell 局部优化和反例驱动迭代；
++- `q2_adaptive_verify.py`：基于角距离上下界的保守时空盒验证；
++- `run_q2_optimized_search.py`：新的主搜索脚本；
++- `tests/test_q2_optimized.py`：公平性、KD 树等价性和时空盒基础测试。
++
++## 推荐环境
++
++```bash
++pip install numpy scipy
++```
++
++没有 SciPy 时，程序仍可导入，但 Sobol、KD 树和 Powell 优化会退化为较慢的备用实现。
++
++## 快速试运行
++
++在 `代码/问题二` 目录执行：
++
++```bash
++python run_q2_optimized_search.py \
++  --start-total 40 \
++  --stop-total 42 \
++  --samples-per-structure 8 \
++  --local-starts-per-structure 1 \
++  --keep-top-per-total 5 \
++  --max-cegis-rounds 2
++```
++
++该配置用于检查程序流程，不用于最终论文结论。
++
++## 正式数值搜索建议
++
++```bash
++python run_q2_optimized_search.py \
++  --start-total 40 \
++  --stop-total 60 \
++  --samples-per-structure 128 \
++  --local-starts-per-structure 5 \
++  --keep-top-per-total 20 \
++  --screen-duration-hours 6 \
++  --screen-time-step 300 \
++  --separation-duration-hours 24 \
++  --separation-time-step 60 \
++  --max-cegis-rounds 10 \
++  --local-max-evaluations 120
++```
++
++程序默认在发现首个数值可行的卫星总数后停止。使用
++`--continue-after-validated` 才会继续搜索更大的卫星总数。
++
++## 保守连续覆盖验证
++
++在正式候选上追加：
++
++```bash
++--adaptive-verify \
++--adaptive-spatial-tolerance 0.05 \
++--adaptive-time-tolerance 1 \
++--adaptive-max-boxes 200000
++```
++
++验证器可能返回：
++
++- `covered`：在当前球形地球、圆轨道和角速度上界模型下完成保守覆盖证明；
++- `uncovered`：发现一个无法满足覆盖重数的时空盒；
++- `inconclusive`：达到细分精度或盒子预算后仍有未决区域。
++
++`inconclusive` 不等于不可行，也不能写成已经证明连续覆盖。
++
++## 输出文件
++
++默认写入 `results_optimized/`：
++
++- `q2_optimized_screen.csv`：全部公平初筛记录；
++- `q2_optimized_refined.csv`：反例驱动精化记录；
++- `q2_structure_audit.csv`：每个 `(M,N,F)` 的实际评价次数；
++- `q2_optimized_summary.json`：参数、首个数值可行候选和可选验证证书。
++
++## 测试
++
++```bash
++python -m unittest discover -s tests -p "test_q2_optimized.py" -v
++```
++
++其中 KD 树测试会将结果与原全量点积方法逐项比较。
+diff --git "a/\344\273\243\347\240\201/\351\227\256\351\242\230\344\272\214/q2_active_set.py" "b/\344\273\243\347\240\201/\351\227\256\351\242\230\344\272\214/q2_active_set.py"
+new file mode 100644
+index 0000000..ae63b04
+--- /dev/null
++++ "b/\344\273\243\347\240\201/\351\227\256\351\242\230\344\272\214/q2_active_set.py"
+@@ -0,0 +1,298 @@
++"""Counterexample-guided continuous-parameter refinement for Problem 2."""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++import math
++from typing import Iterable
++
++import numpy as np
++
++import q2_constellation as q2
++import q2_fast_coverage as fast
++from q2_coverage_margin import ActiveSetMarginResult, evaluate_active_constraints
++from q2_kdtree_coverage import KDTreeCoverageResult, evaluate_constellation_kdtree
++from q2_search_space import WalkerStructure, wrap_continuous_params
++
++try:
++    from scipy.optimize import minimize
++except ImportError:  # pragma: no cover
++    minimize = None
++
++
++@dataclass
++class ActiveConstraintSet:
++    """Pairs of unit-sphere ground points and associated times."""
++
++    ground_points: np.ndarray
++    times_s: np.ndarray
++
++    def __post_init__(self) -> None:
++        self.ground_points = np.asarray(self.ground_points, dtype=float)
++        self.times_s = np.asarray(self.times_s, dtype=float)
++        if self.ground_points.ndim != 2 or self.ground_points.shape[1] != 3:
++            raise ValueError("ground_points must have shape (A,3)")
++        if self.times_s.ndim != 1 or len(self.times_s) != len(self.ground_points):
++            raise ValueError("times_s must have one value per point")
++        if not len(self.times_s):
++            raise ValueError("active constraint set must not be empty")
++        norms = np.linalg.norm(self.ground_points, axis=1, keepdims=True)
++        if np.any(norms == 0.0):
++            raise ValueError("active-set points must be nonzero")
++        self.ground_points = self.ground_points / norms
++
++    def add(self, point: np.ndarray, time_s: float, *, tol: float = 1e-9) -> bool:
++        point = np.asarray(point, dtype=float)
++        if point.shape != (3,):
++            raise ValueError("point must have shape (3,)")
++        point = point / np.linalg.norm(point)
++        same_time = np.abs(self.times_s - float(time_s)) <= tol
++        if np.any(same_time):
++            distances = np.linalg.norm(self.ground_points[same_time] - point, axis=1)
++            if np.any(distances <= tol):
++                return False
++        self.ground_points = np.vstack([self.ground_points, point])
++        self.times_s = np.append(self.times_s, float(time_s))
++        return True
++
++
++@dataclass(frozen=True)
++class ContinuousOptimizationResult:
++    params: q2.ConstellationParams
++    active_margin: ActiveSetMarginResult
++    objective_evaluations: int
++    success: bool
++    message: str
++
++
++@dataclass(frozen=True)
++class CounterexampleSearchResult:
++    params: q2.ConstellationParams
++    active_set: ActiveConstraintSet
++    separation_result: KDTreeCoverageResult
++    rounds: int
++    converged: bool
++    history: tuple[dict, ...]
++
++
++def _axis_with_endpoint(start: float, stop: float, step: float) -> np.ndarray:
++    values = np.arange(start, stop, step, dtype=float)
++    if values.size == 0 or not math.isclose(float(values[-1]), stop, abs_tol=1e-12):
++        values = np.append(values, stop)
++    return values
++
++
++def initial_active_set(
++    region: fast.LatLonRegion,
++    times_s: Iterable[float],
++    *,
++    interior_step_deg: float = 8.0,
++    boundary_step_deg: float = 2.0,
++) -> ActiveConstraintSet:
++    """Construct a small, deterministic coarse active set."""
++
++    if interior_step_deg <= 0.0 or boundary_step_deg <= 0.0:
++        raise ValueError("grid steps must be positive")
++    times = np.asarray(list(times_s), dtype=float)
++    if not len(times):
++        raise ValueError("times_s must not be empty")
++
++    interior_lats = _axis_with_endpoint(region.lat_min_deg, region.lat_max_deg, interior_step_deg)
++    interior_lons = _axis_with_endpoint(region.lon_min_deg, region.lon_max_deg, interior_step_deg)
++    lon_grid, lat_grid = np.meshgrid(interior_lons, interior_lats)
++    base_points = fast.latlon_to_unit(lat_grid.ravel(), lon_grid.ravel())
++
++    boundary_points: list[np.ndarray] = []
++    edge_lons = _axis_with_endpoint(region.lon_min_deg, region.lon_max_deg, boundary_step_deg)
++    edge_lats = _axis_with_endpoint(region.lat_min_deg, region.lat_max_deg, boundary_step_deg)
++    boundary_points.extend(
++        [
++            fast.latlon_to_unit(np.full_like(edge_lons, region.lat_min_deg), edge_lons),
++            fast.latlon_to_unit(np.full_like(edge_lons, region.lat_max_deg), edge_lons),
++            fast.latlon_to_unit(edge_lats, np.full_like(edge_lats, region.lon_min_deg)),
++            fast.latlon_to_unit(edge_lats, np.full_like(edge_lats, region.lon_max_deg)),
++        ]
++    )
++    points = fast.deduplicate_unit_vectors(
++        np.vstack([base_points, *boundary_points]),
++        coordinate_tol=1e-10,
++    )
++
++    repeated_points = np.tile(points, (len(times), 1))
++    repeated_times = np.repeat(times, len(points))
++    return ActiveConstraintSet(repeated_points, repeated_times)
++
++
++def optimize_continuous_params(
++    structure: WalkerStructure,
++    initial_params: q2.ConstellationParams,
++    active_set: ActiveConstraintSet,
++    *,
++    q: int = 1,
++    config: q2.CoverageConfig | None = None,
++    inclination_min_deg: float,
++    inclination_max_deg: float = 90.0,
++    max_evaluations: int = 120,
++) -> ContinuousOptimizationResult:
++    """Maximize minimum active-set margin with a derivative-free optimizer."""
++
++    cfg = config or q2.CoverageConfig()
++    evaluations = 0
++    best_params = initial_params
++    best_margin = evaluate_active_constraints(
++        initial_params,
++        active_set.ground_points,
++        active_set.times_s,
++        q=q,
++        config=cfg,
++    )
++
++    if minimize is None:
++        return ContinuousOptimizationResult(
++            params=best_params,
++            active_margin=best_margin,
++            objective_evaluations=1,
++            success=False,
++            message="SciPy is unavailable; returned the initial candidate",
++        )
++
++    def objective(vector: np.ndarray) -> float:
++        nonlocal evaluations, best_params, best_margin
++        evaluations += 1
++        params = wrap_continuous_params(
++            structure,
++            vector[0],
++            vector[1],
++            vector[2],
++            inclination_min_deg=inclination_min_deg,
++            inclination_max_deg=inclination_max_deg,
++        )
++        result = evaluate_active_constraints(
++            params,
++            active_set.ground_points,
++            active_set.times_s,
++            q=q,
++            config=cfg,
++        )
++        if result.min_margin > best_margin.min_margin:
++            best_params = params
++            best_margin = result
++        return -result.min_margin
++
++    x0 = np.array(
++        [
++            initial_params.inclination_deg,
++            initial_params.raan0_deg,
++            initial_params.u0_deg,
++        ],
++        dtype=float,
++    )
++    result = minimize(
++        objective,
++        x0,
++        method="Powell",
++        options={
++            "maxfev": max_evaluations,
++            "xtol": 1e-4,
++            "ftol": 1e-8,
++            "disp": False,
++        },
++    )
++    return ContinuousOptimizationResult(
++        params=best_params,
++        active_margin=best_margin,
++        objective_evaluations=evaluations,
++        success=bool(result.success),
++        message=str(result.message),
++    )
++
++
++def counterexample_guided_optimize(
++    structure: WalkerStructure,
++    initial_params: q2.ConstellationParams,
++    active_set: ActiveConstraintSet,
++    separation_times_s: np.ndarray,
++    *,
++    q: int = 1,
++    config: q2.CoverageConfig | None = None,
++    region: fast.LatLonRegion | None = None,
++    inclination_min_deg: float,
++    inclination_max_deg: float = 90.0,
++    max_rounds: int = 5,
++    local_max_evaluations: int = 120,
++    margin_tolerance: float = 1e-6,
++    include_representatives: bool = True,
++) -> CounterexampleSearchResult:
++    """Alternate active-set optimization and critical-point separation."""
++
++    cfg = config or q2.CoverageConfig()
++    target_region = region or fast.LatLonRegion()
++    params = initial_params
++    history: list[dict] = []
++    separation: KDTreeCoverageResult | None = None
++
++    for round_index in range(1, max_rounds + 1):
++        optimized = optimize_continuous_params(
++            structure,
++            params,
++            active_set,
++            q=q,
++            config=cfg,
++            inclination_min_deg=inclination_min_deg,
++            inclination_max_deg=inclination_max_deg,
++            max_evaluations=local_max_evaluations,
++        )
++        params = optimized.params
++        separation = evaluate_constellation_kdtree(
++            params,
++            separation_times_s,
++            config=cfg,
++            region=target_region,
++            q=q,
++            include_representatives=include_representatives,
++        )
++        history.append(
++            {
++                "round": round_index,
++                "active_min_margin": optimized.active_margin.min_margin,
++                "separation_min_margin": separation.min_margin,
++                "separation_c_min": separation.c_min,
++                "active_constraints": len(active_set.times_s),
++                "objective_evaluations": optimized.objective_evaluations,
++            }
++        )
++
++        if separation.min_margin >= -margin_tolerance:
++            return CounterexampleSearchResult(
++                params=params,
++                active_set=active_set,
++                separation_result=separation,
++                rounds=round_index,
++                converged=True,
++                history=tuple(history),
++            )
++
++        if separation.worst_point is None or separation.worst_time_index < 0:
++            break
++        worst_time = float(separation.times_s[separation.worst_time_index])
++        added = active_set.add(separation.worst_point, worst_time)
++        if not added:
++            break
++
++    if separation is None:  # Defensive; max_rounds is validated by caller usage.
++        separation = evaluate_constellation_kdtree(
++            params,
++            separation_times_s,
++            config=cfg,
++            region=target_region,
++            q=q,
++            include_representatives=include_representatives,
++        )
++    return CounterexampleSearchResult(
++        params=params,
++        active_set=active_set,
++        separation_result=separation,
++        rounds=len(history),
++        converged=False,
++        history=tuple(history),
++    )
+diff --git "a/\344\273\243\347\240\201/\351\227\256\351\242\230\344\272\214/q2_adaptive_verify.py" "b/\344\273\243\347\240\201/\351\227\256\351\242\230\344\272\214/q2_adaptive_verify.py"
+new file mode 100644
+index 0000000..332f259
+--- /dev/null
++++ "b/\344\273\243\347\240\201/\351\227\256\351\242\230\344\272\214/q2_adaptive_verify.py"
+@@ -0,0 +1,339 @@
++"""Conservative space-time box verification for continuous q-fold coverage.
++
++The verifier uses triangle-inequality bounds in angular distance.  It can return
++``covered`` (certificate under the stated spherical/circular-orbit model),
++``uncovered`` (a rigorously rejected box), or ``inconclusive`` when the chosen
++subdivision budget/tolerances are insufficient.
++"""
++
++from __future__ import annotations
++
++from collections import deque
++from dataclasses import dataclass
++import math
++
++import numpy as np
++
++import q2_constellation as q2
++import q2_fast_coverage as fast
++
++
++@dataclass(frozen=True)
++class SpaceTimeBox:
++    lat_min_deg: float
++    lat_max_deg: float
++    lon_min_deg: float
++    lon_max_deg: float
++    time_min_s: float
++    time_max_s: float
++    depth: int = 0
++
++    def validate(self) -> None:
++        if self.lat_max_deg < self.lat_min_deg:
++            raise ValueError("invalid latitude interval")
++        if self.lon_max_deg < self.lon_min_deg:
++            raise ValueError("invalid longitude interval")
++        if self.time_max_s < self.time_min_s:
++            raise ValueError("invalid time interval")
++
++    @property
++    def center_lat_deg(self) -> float:
++        return 0.5 * (self.lat_min_deg + self.lat_max_deg)
++
++    @property
++    def center_lon_deg(self) -> float:
++        return 0.5 * (self.lon_min_deg + self.lon_max_deg)
++
++    @property
++    def center_time_s(self) -> float:
++        return 0.5 * (self.time_min_s + self.time_max_s)
++
++    @property
++    def time_half_width_s(self) -> float:
++        return 0.5 * (self.time_max_s - self.time_min_s)
++
++    @property
++    def lat_span_deg(self) -> float:
++        return self.lat_max_deg - self.lat_min_deg
++
++    @property
++    def lon_span_deg(self) -> float:
++        return self.lon_max_deg - self.lon_min_deg
++
++
++@dataclass(frozen=True)
++class BoxClassification:
++    status: str
++    guaranteed_count: int
++    possible_count: int
++    uncertainty_rad: float
++    center_distances_rad: np.ndarray
++
++
++@dataclass(frozen=True)
++class ContinuousCoverageCertificate:
++    status: str
++    q: int
++    processed_boxes: int
++    covered_boxes: int
++    uncertain_boxes: int
++    max_depth: int
++    failure_box: SpaceTimeBox | None
++    unresolved_boxes: tuple[SpaceTimeBox, ...]
++    message: str
++
++
++def conservative_space_radius_rad(box: SpaceTimeBox) -> float:
++    """Conservative angular radius for a latitude-longitude rectangle.
++
++    Any point can be reached from the centre by first moving along a meridian
++    and then along a parallel.  Replacing the parallel factor by one gives the
++    safe upper bound ``half_lat_span + half_lon_span``.
++    """
++
++    box.validate()
++    return 0.5 * math.radians(box.lat_span_deg + box.lon_span_deg)
++
++
++def satellite_angular_speed_bound_rad_s(
++    config: q2.CoverageConfig | None = None,
++) -> float:
++    """Conservative ECEF unit-vector angular speed bound ``n + omega_E``."""
++
++    cfg = config or q2.CoverageConfig()
++    return cfg.mean_motion_rad_s + cfg.earth_rotation_rad_s
++
++
++def classify_space_time_box(
++    params: q2.ConstellationParams,
++    box: SpaceTimeBox,
++    *,
++    q: int = 1,
++    config: q2.CoverageConfig | None = None,
++) -> BoxClassification:
++    """Classify a box as covered, uncovered, or uncertain."""
++
++    box.validate()
++    cfg = config or q2.CoverageConfig()
++    if q <= 0 or q > params.total_satellites:
++        raise ValueError("q must lie in [1, total satellites]")
++
++    center_point = fast.latlon_to_unit(box.center_lat_deg, box.center_lon_deg)
++    satellites = q2.satellite_unit_vectors(
++        params,
++        np.array([box.center_time_s], dtype=float),
++        cfg,
++    )[:, 0, :]
++    dots = np.clip(satellites @ center_point, -1.0, 1.0)
++    center_distances = np.arccos(dots)
++
++    uncertainty = conservative_space_radius_rad(box)
++    uncertainty += satellite_angular_speed_bound_rad_s(cfg) * box.time_half_width_s
++
++    guaranteed = int(np.count_nonzero(center_distances + uncertainty <= cfg.coverage_angle_rad))
++    possible = int(
++        np.count_nonzero(
++            np.maximum(0.0, center_distances - uncertainty) <= cfg.coverage_angle_rad
++        )
++    )
++
++    if guaranteed >= q:
++        status = "covered"
++    elif possible < q:
++        status = "uncovered"
++    else:
++        status = "uncertain"
++
++    return BoxClassification(
++        status=status,
++        guaranteed_count=guaranteed,
++        possible_count=possible,
++        uncertainty_rad=uncertainty,
++        center_distances_rad=center_distances,
++    )
++
++
++def subdivide_space_time_box(
++    box: SpaceTimeBox,
++    *,
++    config: q2.CoverageConfig | None = None,
++) -> tuple[SpaceTimeBox, SpaceTimeBox]:
++    """Bisect the dimension contributing the largest angular uncertainty."""
++
++    box.validate()
++    cfg = config or q2.CoverageConfig()
++    lat_contribution = math.radians(box.lat_span_deg)
++    lon_contribution = math.radians(box.lon_span_deg)
++    time_contribution = (
++        satellite_angular_speed_bound_rad_s(cfg)
++        * (box.time_max_s - box.time_min_s)
++    )
++    dimension = int(np.argmax([lat_contribution, lon_contribution, time_contribution]))
++    depth = box.depth + 1
++
++    if dimension == 0:
++        middle = 0.5 * (box.lat_min_deg + box.lat_max_deg)
++        return (
++            SpaceTimeBox(
++                box.lat_min_deg,
++                middle,
++                box.lon_min_deg,
++                box.lon_max_deg,
++                box.time_min_s,
++                box.time_max_s,
++                depth,
++            ),
++            SpaceTimeBox(
++                middle,
++                box.lat_max_deg,
++                box.lon_min_deg,
++                box.lon_max_deg,
++                box.time_min_s,
++                box.time_max_s,
++                depth,
++            ),
++        )
++    if dimension == 1:
++        middle = 0.5 * (box.lon_min_deg + box.lon_max_deg)
++        return (
++            SpaceTimeBox(
++                box.lat_min_deg,
++                box.lat_max_deg,
++                box.lon_min_deg,
++                middle,
++                box.time_min_s,
++                box.time_max_s,
++                depth,
++            ),
++            SpaceTimeBox(
++                box.lat_min_deg,
++                box.lat_max_deg,
++                middle,
++                box.lon_max_deg,
++                box.time_min_s,
++                box.time_max_s,
++                depth,
++            ),
++        )
++
++    middle = 0.5 * (box.time_min_s + box.time_max_s)
++    return (
++        SpaceTimeBox(
++            box.lat_min_deg,
++            box.lat_max_deg,
++            box.lon_min_deg,
++            box.lon_max_deg,
++            box.time_min_s,
++            middle,
++            depth,
++        ),
++        SpaceTimeBox(
++            box.lat_min_deg,
++            box.lat_max_deg,
++            box.lon_min_deg,
++            box.lon_max_deg,
++            middle,
++            box.time_max_s,
++            depth,
++        ),
++    )
++
++
++def certify_continuous_coverage(
++    params: q2.ConstellationParams,
++    region: fast.LatLonRegion,
++    *,
++    duration_s: float,
++    q: int = 1,
++    config: q2.CoverageConfig | None = None,
++    spatial_tolerance_deg: float = 0.05,
++    time_tolerance_s: float = 1.0,
++    max_boxes: int = 200_000,
++    max_depth: int = 60,
++    keep_unresolved: int = 20,
++) -> ContinuousCoverageCertificate:
++    """Attempt a conservative continuous-coverage certificate."""
++
++    if duration_s <= 0.0:
++        raise ValueError("duration_s must be positive")
++    if spatial_tolerance_deg <= 0.0 or time_tolerance_s <= 0.0:
++        raise ValueError("tolerances must be positive")
++    if max_boxes <= 0 or max_depth <= 0:
++        raise ValueError("max_boxes and max_depth must be positive")
++
++    cfg = config or q2.CoverageConfig()
++    initial = SpaceTimeBox(
++        region.lat_min_deg,
++        region.lat_max_deg,
++        region.lon_min_deg,
++        region.lon_max_deg,
++        0.0,
++        duration_s,
++        0,
++    )
++    queue: deque[SpaceTimeBox] = deque([initial])
++    processed = covered = 0
++    deepest = 0
++    unresolved: list[SpaceTimeBox] = []
++
++    while queue and processed < max_boxes:
++        box = queue.popleft()
++        processed += 1
++        deepest = max(deepest, box.depth)
++        classification = classify_space_time_box(params, box, q=q, config=cfg)
++
++        if classification.status == "covered":
++            covered += 1
++            continue
++        if classification.status == "uncovered":
++            return ContinuousCoverageCertificate(
++                status="uncovered",
++                q=q,
++                processed_boxes=processed,
++                covered_boxes=covered,
++                uncertain_boxes=len(queue),
++                max_depth=deepest,
++                failure_box=box,
++                unresolved_boxes=tuple(unresolved),
++                message="Found a space-time box that cannot achieve the required coverage fold.",
++            )
++
++        spatial_small = max(box.lat_span_deg, box.lon_span_deg) <= spatial_tolerance_deg
++        time_small = (box.time_max_s - box.time_min_s) <= time_tolerance_s
++        if (spatial_small and time_small) or box.depth >= max_depth:
++            if len(unresolved) < keep_unresolved:
++                unresolved.append(box)
++            continue
++
++        queue.extend(subdivide_space_time_box(box, config=cfg))
++
++    if not queue and not unresolved:
++        return ContinuousCoverageCertificate(
++            status="covered",
++            q=q,
++            processed_boxes=processed,
++            covered_boxes=covered,
++            uncertain_boxes=0,
++            max_depth=deepest,
++            failure_box=None,
++            unresolved_boxes=(),
++            message="All generated space-time boxes were conservatively certified covered.",
++        )
++
++    remaining = len(queue) + len(unresolved)
++    if queue and len(unresolved) < keep_unresolved:
++        unresolved.extend(list(queue)[: keep_unresolved - len(unresolved)])
++    return ContinuousCoverageCertificate(
++        status="inconclusive",
++        q=q,
++        processed_boxes=processed,
++        covered_boxes=covered,
++        uncertain_boxes=remaining,
++        max_depth=deepest,
++        failure_box=None,
++        unresolved_boxes=tuple(unresolved),
++        message=(
++            "The conservative verifier exhausted its box budget or reached the "
++            "requested resolution with unresolved boundary boxes."
++        ),
++    )
+diff --git "a/\344\273\243\347\240\201/\351\227\256\351\242\230\344\272\214/q2_coverage_margin.py" "b/\344\273\243\347\240\201/\351\227\256\351\242\230\344\272\214/q2_coverage_margin.py"
+new file mode 100644
+index 0000000..94e5461
+--- /dev/null
++++ "b/\344\273\243\347\240\201/\351\227\256\351\242\230\344\272\214/q2_coverage_margin.py"
+@@ -0,0 +1,136 @@
++"""Continuous q-fold coverage margins for Problem 2.
++
++A positive margin means the q-th nearest satellite is inside the coverage
++boundary; a negative margin measures how far the constraint is from feasibility
++in dot-product space.  This gives optimizers more information than an integer
++minimum coverage count alone.
++"""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++import math
++
++import numpy as np
++
++import q2_constellation as q2
++
++
++@dataclass(frozen=True)
++class PointMarginResult:
++    counts: np.ndarray
++    margins: np.ndarray
++    q: int
++    worst_point_index: int
++
++    @property
++    def min_count(self) -> int:
++        return int(np.min(self.counts)) if len(self.counts) else 0
++
++    @property
++    def min_margin(self) -> float:
++        return float(np.min(self.margins)) if len(self.margins) else -math.inf
++
++
++@dataclass(frozen=True)
++class ActiveSetMarginResult:
++    margins: np.ndarray
++    counts: np.ndarray
++    min_margin: float
++    min_count: int
++    worst_constraint_index: int
++    q: int
++
++
++def _validate_q(q: int, satellite_count: int) -> None:
++    if q <= 0:
++        raise ValueError("q must be positive")
++    if q > satellite_count:
++        raise ValueError("q cannot exceed the number of satellites")
++
++
++def q_fold_margins_at_points(
++    satellite_vectors: np.ndarray,
++    ground_points: np.ndarray,
++    coverage_radius_rad: float,
++    *,
++    q: int = 1,
++    block_size: int = 4096,
++    atol: float = 1e-12,
++) -> PointMarginResult:
++    """Compute exact counts and q-fold margins by blocked dense products."""
++
++    satellites = np.asarray(satellite_vectors, dtype=float)
++    points = np.asarray(ground_points, dtype=float)
++    if satellites.ndim != 2 or satellites.shape[1] != 3:
++        raise ValueError("satellite_vectors must have shape (S,3)")
++    if points.ndim != 2 or points.shape[1] != 3:
++        raise ValueError("ground_points must have shape (Q,3)")
++    if block_size <= 0:
++        raise ValueError("block_size must be positive")
++
++    satellites = satellites / np.linalg.norm(satellites, axis=1, keepdims=True)
++    points = points / np.linalg.norm(points, axis=1, keepdims=True)
++    _validate_q(q, len(satellites))
++
++    threshold = math.cos(coverage_radius_rad)
++    counts = np.empty(len(points), dtype=np.int32)
++    margins = np.empty(len(points), dtype=float)
++    kth_index = len(satellites) - q
++
++    for start in range(0, len(points), block_size):
++        end = min(start + block_size, len(points))
++        dots = points[start:end] @ satellites.T
++        counts[start:end] = np.count_nonzero(dots >= threshold - atol, axis=1)
++        qth = np.partition(dots, kth_index, axis=1)[:, kth_index]
++        margins[start:end] = qth - threshold
++
++    worst = int(np.argmin(margins)) if len(margins) else -1
++    return PointMarginResult(counts=counts, margins=margins, q=q, worst_point_index=worst)
++
++
++def evaluate_active_constraints(
++    params: q2.ConstellationParams,
++    ground_points: np.ndarray,
++    constraint_times_s: np.ndarray,
++    *,
++    q: int = 1,
++    config: q2.CoverageConfig | None = None,
++) -> ActiveSetMarginResult:
++    """Evaluate one ground point at one associated time for each constraint."""
++
++    points = np.asarray(ground_points, dtype=float)
++    times = np.asarray(constraint_times_s, dtype=float)
++    if points.ndim != 2 or points.shape[1] != 3:
++        raise ValueError("ground_points must have shape (A,3)")
++    if times.ndim != 1 or len(times) != len(points):
++        raise ValueError("constraint_times_s must have one value per point")
++    if len(points) == 0:
++        raise ValueError("active constraint set must not be empty")
++
++    cfg = config or q2.CoverageConfig()
++    unique_times, inverse = np.unique(times, return_inverse=True)
++    snapshots = q2.satellite_unit_vectors(params, unique_times, cfg)
++
++    counts = np.empty(len(points), dtype=np.int32)
++    margins = np.empty(len(points), dtype=float)
++    for time_index in range(len(unique_times)):
++        mask = inverse == time_index
++        result = q_fold_margins_at_points(
++            snapshots[:, time_index, :],
++            points[mask],
++            cfg.coverage_angle_rad,
++            q=q,
++        )
++        counts[mask] = result.counts
++        margins[mask] = result.margins
++
++    worst = int(np.argmin(margins))
++    return ActiveSetMarginResult(
++        margins=margins,
++        counts=counts,
++        min_margin=float(margins[worst]),
++        min_count=int(np.min(counts)),
++        worst_constraint_index=worst,
++        q=q,
++    )
+diff --git "a/\344\273\243\347\240\201/\351\227\256\351\242\230\344\272\214/q2_kdtree_coverage.py" "b/\344\273\243\347\240\201/\351\227\256\351\242\230\344\272\214/q2_kdtree_coverage.py"
+new file mode 100644
+index 0000000..eb465b8
+--- /dev/null
++++ "b/\344\273\243\347\240\201/\351\227\256\351\242\230\344\272\214/q2_kdtree_coverage.py"
+@@ -0,0 +1,395 @@
++"""KD-tree accelerated critical-point coverage evaluation.
++
++The original critical-point implementation reduced memory but still performed
++``O(S^2)`` satellite-pair products and ``O(Q*S)`` point coverage products.  This
++module uses a 3-D unit-sphere ``cKDTree`` to query only geometrically relevant
++pairs and nearest satellites.
++"""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++import math
++
++import numpy as np
++
++import q2_constellation as q2
++import q2_fast_coverage as legacy
++
++try:
++    from scipy.spatial import cKDTree
++except ImportError:  # pragma: no cover
++    cKDTree = None
++
++
++@dataclass(frozen=True)
++class LocalCoverageResult:
++    counts: np.ndarray
++    margins: np.ndarray
++    q: int
++    backend: str
++
++    @property
++    def min_count(self) -> int:
++        return int(np.min(self.counts)) if len(self.counts) else 0
++
++    @property
++    def min_margin(self) -> float:
++        return float(np.min(self.margins)) if len(self.margins) else -math.inf
++
++    @property
++    def worst_point_index(self) -> int:
++        return int(np.argmin(self.margins)) if len(self.margins) else -1
++
++
++@dataclass(frozen=True)
++class KDTreeCoverageResult:
++    params: object | None
++    times_s: np.ndarray
++    min_counts_by_time: np.ndarray
++    min_margins_by_time: np.ndarray
++    critical_point_counts_by_time: np.ndarray
++    c_min: int
++    min_margin: float
++    single_coverage_time_rate: float
++    strict_double_time_rate: float
++    max_uncovered_gap_s: float
++    worst_time_index: int
++    worst_point: np.ndarray | None
++    stopped_early: bool
++    evaluated_time_steps: int
++    backend: str
++
++
++def _normalize(vectors: np.ndarray) -> np.ndarray:
++    return legacy.normalize_vectors(vectors)
++
++
++def angular_radius_to_chord(angle_rad: float) -> float:
++    if not 0.0 <= angle_rad <= math.pi:
++        raise ValueError("angle_rad must lie in [0, pi]")
++    return 2.0 * math.sin(0.5 * angle_rad)
++
++
++def neighbor_pairs_kdtree(
++    unit_vectors: np.ndarray,
++    max_angle_rad: float,
++) -> list[tuple[int, int]]:
++    """Return pairs within an angular radius using a unit-sphere KD tree."""
++
++    vectors = _normalize(unit_vectors)
++    if vectors.ndim != 2:
++        raise ValueError("unit_vectors must have shape (S,3)")
++
++    if cKDTree is None:
++        return legacy.neighbor_pairs_by_dot(vectors, max_angle_rad)
++
++    tree = cKDTree(vectors)
++    pairs = tree.query_pairs(
++        angular_radius_to_chord(max_angle_rad) + 1e-12,
++        output_type="ndarray",
++    )
++    if pairs.size == 0:
++        return []
++    return [(int(i), int(j)) for i, j in np.asarray(pairs)]
++
++
++def coverage_counts_and_margins_local(
++    satellite_vectors: np.ndarray,
++    ground_points: np.ndarray,
++    coverage_radius_rad: float,
++    *,
++    q: int = 1,
++) -> LocalCoverageResult:
++    """Compute exact local counts and q-th-nearest coverage margins.
++
++    On the unit sphere, Euclidean chord distance ``d`` and dot product satisfy
++    ``dot = 1 - d^2/2``.  The q-th nearest satellite therefore gives the exact
++    q-th largest dot product without scanning all satellites per point.
++    """
++
++    satellites = _normalize(satellite_vectors)
++    points = _normalize(ground_points)
++    if satellites.ndim != 2 or points.ndim != 2:
++        raise ValueError("satellite_vectors and ground_points must be 2-D")
++    if q <= 0 or q > len(satellites):
++        raise ValueError("q must lie in [1, number of satellites]")
++
++    if cKDTree is None:
++        from q2_coverage_margin import q_fold_margins_at_points
++
++        dense = q_fold_margins_at_points(
++            satellites,
++            points,
++            coverage_radius_rad,
++            q=q,
++        )
++        return LocalCoverageResult(
++            counts=dense.counts,
++            margins=dense.margins,
++            q=q,
++            backend="dense-fallback",
++        )
++
++    tree = cKDTree(satellites)
++    cover_chord = angular_radius_to_chord(coverage_radius_rad) + 1e-12
++    neighborhoods = tree.query_ball_point(points, cover_chord)
++    counts = np.fromiter((len(items) for items in neighborhoods), dtype=np.int32, count=len(points))
++
++    distances, _indices = tree.query(points, k=q)
++    distances = np.asarray(distances, dtype=float)
++    if q == 1:
++        qth_distances = distances.reshape(-1)
++    else:
++        qth_distances = distances[:, -1]
++    qth_dots = 1.0 - 0.5 * np.square(qth_distances)
++    margins = qth_dots - math.cos(coverage_radius_rad)
++
++    return LocalCoverageResult(
++        counts=counts,
++        margins=margins,
++        q=q,
++        backend="scipy-cKDTree",
++    )
++
++
++def critical_points_at_time_kdtree(
++    satellite_vectors: np.ndarray,
++    coverage_radius_rad: float,
++    region: legacy.LatLonRegion,
++    *,
++    include_region_corners: bool = True,
++    include_region_boundary: bool = True,
++    include_representatives: bool = True,
++    representative_offset_rad: float = 1e-4,
++    coordinate_tol: float = 1e-10,
++) -> np.ndarray:
++    """Generate the legacy critical-point set with KD-tree pair discovery."""
++
++    satellites = _normalize(satellite_vectors)
++    point_batches: list[np.ndarray] = []
++
++    if include_region_corners:
++        point_batches.append(legacy.region_corner_points(region))
++
++    if include_region_boundary:
++        for satellite in satellites:
++            boundary = legacy.small_circle_region_boundary_intersections(
++                satellite,
++                coverage_radius_rad,
++                region,
++                atol=max(coordinate_tol, 1e-12),
++            )
++            if boundary.size:
++                point_batches.append(boundary)
++
++    if len(satellites) >= 2:
++        max_pair_angle = min(math.pi, 2.0 * coverage_radius_rad)
++        for i, j in neighbor_pairs_kdtree(satellites, max_pair_angle):
++            intersections = legacy.small_circle_intersections(
++                satellites[i],
++                satellites[j],
++                coverage_radius_rad,
++                atol=max(coordinate_tol, 1e-12),
++            )
++            if not intersections.size:
++                continue
++            mask = legacy.points_in_latlon_box(
++                intersections,
++                region,
++                tol_deg=max(1e-10, math.degrees(coordinate_tol)),
++            )
++            if np.any(mask):
++                point_batches.append(intersections[mask])
++
++    if not point_batches:
++        return np.empty((0, 3), dtype=float)
++
++    vertices = legacy.deduplicate_unit_vectors(
++        np.vstack(point_batches),
++        coordinate_tol=coordinate_tol,
++    )
++    if not include_representatives:
++        return vertices
++
++    representative_batches: list[np.ndarray] = []
++    edge_points = legacy.region_edge_representative_points(
++        vertices,
++        region,
++        inward_offset_deg=math.degrees(representative_offset_rad),
++        coordinate_tol=coordinate_tol,
++    )
++    if edge_points.size:
++        representative_batches.append(edge_points)
++
++    cos_radius = math.cos(coverage_radius_rad)
++    boundary_tol = max(1e-7, 10.0 * coordinate_tol)
++    for satellite in satellites:
++        on_circle = np.abs(vertices @ satellite - cos_radius) <= boundary_tol
++        if np.count_nonzero(on_circle) < 2:
++            continue
++        arc_points = legacy.coverage_arc_representative_points(
++            satellite,
++            vertices[on_circle],
++            coverage_radius_rad,
++            offset_rad=representative_offset_rad,
++            coordinate_tol=coordinate_tol,
++        )
++        if not arc_points.size:
++            continue
++        mask = legacy.points_in_latlon_box(
++            arc_points,
++            region,
++            tol_deg=max(1e-10, math.degrees(coordinate_tol)),
++        )
++        if np.any(mask):
++            representative_batches.append(arc_points[mask])
++
++    if not representative_batches:
++        return vertices
++    return legacy.deduplicate_unit_vectors(
++        np.vstack([vertices, *representative_batches]),
++        coordinate_tol=coordinate_tol,
++    )
++
++
++def _longest_false_gap_s(values: np.ndarray, times_s: np.ndarray) -> float:
++    values = np.asarray(values, dtype=bool)
++    if not len(values):
++        return 0.0
++    dt = float(np.median(np.diff(times_s))) if len(times_s) >= 2 else 0.0
++    longest = current = 0
++    for value in values:
++        if value:
++            longest = max(longest, current)
++            current = 0
++        else:
++            current += 1
++    return float(max(longest, current) * dt)
++
++
++def evaluate_satellite_snapshots_kdtree(
++    satellite_vectors: np.ndarray,
++    times_s: np.ndarray,
++    coverage_radius_rad: float,
++    region: legacy.LatLonRegion,
++    *,
++    params: object | None = None,
++    q: int = 1,
++    include_representatives: bool = True,
++    representative_offset_rad: float = 1e-4,
++    stop_if_margin_below: float | None = None,
++    coordinate_tol: float = 1e-10,
++) -> KDTreeCoverageResult:
++    """Evaluate a satellite time series with KD-tree critical points."""
++
++    snapshots = _normalize(satellite_vectors)
++    times = np.asarray(times_s, dtype=float)
++    if snapshots.ndim != 3 or snapshots.shape[1] != len(times):
++        raise ValueError("satellite_vectors must have shape (S,L,3)")
++
++    min_counts: list[int] = []
++    min_margins: list[float] = []
++    point_counts: list[int] = []
++    evaluated_times: list[float] = []
++    worst_points: list[np.ndarray | None] = []
++    stopped_early = False
++    backend = "scipy-cKDTree" if cKDTree is not None else "dense-fallback"
++
++    for time_index, time_s in enumerate(times):
++        satellites_t = snapshots[:, time_index, :]
++        points = critical_points_at_time_kdtree(
++            satellites_t,
++            coverage_radius_rad,
++            region,
++            include_representatives=include_representatives,
++            representative_offset_rad=representative_offset_rad,
++            coordinate_tol=coordinate_tol,
++        )
++        point_counts.append(int(len(points)))
++        evaluated_times.append(float(time_s))
++
++        if not len(points):
++            min_counts.append(0)
++            min_margins.append(-math.inf)
++            worst_points.append(None)
++        else:
++            local = coverage_counts_and_margins_local(
++                satellites_t,
++                points,
++                coverage_radius_rad,
++                q=q,
++            )
++            worst_index = local.worst_point_index
++            min_counts.append(local.min_count)
++            min_margins.append(local.min_margin)
++            worst_points.append(points[worst_index].copy())
++            backend = local.backend
++
++        if stop_if_margin_below is not None and min_margins[-1] < stop_if_margin_below:
++            stopped_early = True
++            break
++
++    count_array = np.asarray(min_counts, dtype=np.int32)
++    margin_array = np.asarray(min_margins, dtype=float)
++    point_count_array = np.asarray(point_counts, dtype=np.int32)
++    evaluated_times_array = np.asarray(evaluated_times, dtype=float)
++
++    if len(margin_array):
++        worst_time_index = int(np.argmin(margin_array))
++        min_margin = float(margin_array[worst_time_index])
++        c_min = int(np.min(count_array))
++        worst_point = worst_points[worst_time_index]
++    else:
++        worst_time_index = -1
++        min_margin = -math.inf
++        c_min = 0
++        worst_point = None
++
++    covered_once = count_array >= 1
++    covered_twice = count_array >= 2
++    return KDTreeCoverageResult(
++        params=params,
++        times_s=evaluated_times_array,
++        min_counts_by_time=count_array,
++        min_margins_by_time=margin_array,
++        critical_point_counts_by_time=point_count_array,
++        c_min=c_min,
++        min_margin=min_margin,
++        single_coverage_time_rate=float(np.mean(covered_once)) if len(count_array) else 0.0,
++        strict_double_time_rate=float(np.mean(covered_twice)) if len(count_array) else 0.0,
++        max_uncovered_gap_s=_longest_false_gap_s(covered_once, evaluated_times_array),
++        worst_time_index=worst_time_index,
++        worst_point=worst_point,
++        stopped_early=stopped_early,
++        evaluated_time_steps=len(evaluated_times_array),
++        backend=backend,
++    )
++
++
++def evaluate_constellation_kdtree(
++    params: q2.ConstellationParams,
++    times_s: np.ndarray,
++    *,
++    config: q2.CoverageConfig | None = None,
++    region: legacy.LatLonRegion | None = None,
++    q: int = 1,
++    include_representatives: bool = True,
++    representative_offset_rad: float = 1e-4,
++    stop_if_margin_below: float | None = None,
++) -> KDTreeCoverageResult:
++    cfg = config or q2.CoverageConfig()
++    target_region = region or legacy.LatLonRegion()
++    times = np.asarray(times_s, dtype=float)
++    snapshots = q2.satellite_unit_vectors(params, times, cfg)
++    return evaluate_satellite_snapshots_kdtree(
++        snapshots,
++        times,
++        cfg.coverage_angle_rad,
++        target_region,
++        params=params,
++        q=q,
++        include_representatives=include_representatives,
++        representative_offset_rad=representative_offset_rad,
++        stop_if_margin_below=stop_if_margin_below,
++    )
+diff --git "a/\344\273\243\347\240\201/\351\227\256\351\242\230\344\272\214/q2_search_space.py" "b/\344\273\243\347\240\201/\351\227\256\351\242\230\344\272\214/q2_search_space.py"
+new file mode 100644
+index 0000000..f37a0bf
+--- /dev/null
++++ "b/\344\273\243\347\240\201/\351\227\256\351\242\230\344\272\214/q2_search_space.py"
+@@ -0,0 +1,211 @@
++"""Fair Walker-Delta search-space generation for Problem 2.
++
++This module fixes the enumeration-order bias in the original candidate
++generator.  Every discrete Walker structure ``(M, N, F)`` receives its own
++continuous-parameter sampling budget.
++"""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++import math
++from typing import Iterable, Iterator
++
++import numpy as np
++
++import q2_constellation as q2
++
++try:  # SciPy is preferred but the module remains usable without it.
++    from scipy.stats import qmc
++except ImportError:  # pragma: no cover - exercised only in minimal environments.
++    qmc = None
++
++
++@dataclass(frozen=True, order=True)
++class WalkerStructure:
++    """Discrete Walker-Delta structure with ``M*N`` satellites."""
++
++    planes: int
++    sats_per_plane: int
++    phase_factor: int
++
++    @property
++    def total_satellites(self) -> int:
++        return self.planes * self.sats_per_plane
++
++    def validate(self) -> None:
++        if self.planes <= 0:
++            raise ValueError("planes must be positive")
++        if self.sats_per_plane <= 0:
++            raise ValueError("sats_per_plane must be positive")
++        if not 0 <= self.phase_factor < self.planes:
++            raise ValueError("phase_factor must lie in [0, planes)")
++
++
++def minimum_reachable_inclination_deg(
++    *,
++    region_lat_max_deg: float = 53.0,
++    coverage_angle_rad: float,
++) -> float:
++    """Necessary inclination lower bound from latitude reachability."""
++
++    if not 0.0 <= coverage_angle_rad <= math.pi:
++        raise ValueError("coverage_angle_rad must lie in [0, pi]")
++    return max(0.0, region_lat_max_deg - math.degrees(coverage_angle_rad))
++
++
++def walker_structures(total_satellites: int) -> list[WalkerStructure]:
++    """Return all discrete ``(M,N,F)`` structures for a fixed total.
++
++    Ordered factor pairs are retained because ``(M,N)`` and ``(N,M)`` describe
++    different Walker layouts.
++    """
++
++    if total_satellites <= 0:
++        raise ValueError("total_satellites must be positive")
++
++    structures: list[WalkerStructure] = []
++    for planes, sats_per_plane in q2.factor_pairs(total_satellites):
++        for phase_factor in range(planes):
++            structures.append(
++                WalkerStructure(
++                    planes=planes,
++                    sats_per_plane=sats_per_plane,
++                    phase_factor=phase_factor,
++                )
++            )
++    return structures
++
++
++def phase_widths_deg(structure: WalkerStructure) -> tuple[float, float]:
++    """Return Walker symmetry fundamental widths for ``Omega0`` and ``u0``."""
++
++    structure.validate()
++    return 360.0 / structure.planes, 360.0 / structure.sats_per_plane
++
++
++def wrap_continuous_params(
++    structure: WalkerStructure,
++    inclination_deg: float,
++    raan0_deg: float,
++    u0_deg: float,
++    *,
++    inclination_min_deg: float,
++    inclination_max_deg: float,
++) -> q2.ConstellationParams:
++    """Clip inclination and wrap periodic phase variables."""
++
++    structure.validate()
++    if inclination_max_deg < inclination_min_deg:
++        raise ValueError("inclination_max_deg must be >= inclination_min_deg")
++
++    omega_width, u_width = phase_widths_deg(structure)
++    inclination = float(np.clip(inclination_deg, inclination_min_deg, inclination_max_deg))
++    raan0 = float(raan0_deg % omega_width)
++    u0 = float(u0_deg % u_width)
++    return q2.ConstellationParams(
++        planes=structure.planes,
++        sats_per_plane=structure.sats_per_plane,
++        phase_factor=structure.phase_factor,
++        inclination_deg=inclination,
++        raan0_deg=raan0,
++        u0_deg=u0,
++    )
++
++
++def _unit_cube_samples(
++    n_samples: int,
++    *,
++    seed: int | None,
++    scramble: bool,
++) -> np.ndarray:
++    if n_samples <= 0:
++        raise ValueError("n_samples must be positive")
++
++    if qmc is not None:
++        sampler = qmc.Sobol(d=3, scramble=scramble, seed=seed)
++        # random_base2 preserves the Sobol balance property when possible.
++        exponent = int(math.ceil(math.log2(n_samples)))
++        return sampler.random_base2(exponent)[:n_samples]
++
++    rng = np.random.default_rng(seed)
++    # Deterministic fallback.  It is not a Sobol sequence, but preserves equal
++    # per-structure budgets instead of silently reverting to biased enumeration.
++    return rng.random((n_samples, 3))
++
++
++def sobol_continuous_params(
++    structure: WalkerStructure,
++    n_samples: int,
++    *,
++    inclination_min_deg: float,
++    inclination_max_deg: float = 90.0,
++    seed: int | None = None,
++    scramble: bool = True,
++) -> list[q2.ConstellationParams]:
++    """Generate low-discrepancy samples for ``(i, Omega0, u0)``."""
++
++    structure.validate()
++    if inclination_max_deg < inclination_min_deg:
++        raise ValueError("inclination_max_deg must be >= inclination_min_deg")
++
++    unit = _unit_cube_samples(n_samples, seed=seed, scramble=scramble)
++    omega_width, u_width = phase_widths_deg(structure)
++
++    params: list[q2.ConstellationParams] = []
++    for z_i, z_omega, z_u in unit:
++        params.append(
++            q2.ConstellationParams(
++                planes=structure.planes,
++                sats_per_plane=structure.sats_per_plane,
++                phase_factor=structure.phase_factor,
++                inclination_deg=float(
++                    inclination_min_deg
++                    + z_i * (inclination_max_deg - inclination_min_deg)
++                ),
++                raan0_deg=float(z_omega * omega_width),
++                u0_deg=float(z_u * u_width),
++            )
++        )
++    return params
++
++
++def fair_candidate_params_for_total(
++    total_satellites: int,
++    *,
++    samples_per_structure: int,
++    inclination_min_deg: float,
++    inclination_max_deg: float = 90.0,
++    seed: int | None = None,
++) -> Iterator[q2.ConstellationParams]:
++    """Yield exactly ``samples_per_structure`` candidates for every structure."""
++
++    structures = walker_structures(total_satellites)
++    seed_sequence = np.random.SeedSequence(seed)
++    child_seeds = seed_sequence.spawn(len(structures))
++
++    for structure, child_seed in zip(structures, child_seeds):
++        structure_seed = int(child_seed.generate_state(1, dtype=np.uint32)[0])
++        yield from sobol_continuous_params(
++            structure,
++            samples_per_structure,
++            inclination_min_deg=inclination_min_deg,
++            inclination_max_deg=inclination_max_deg,
++            seed=structure_seed,
++        )
++
++
++def group_params_by_structure(
++    params: Iterable[q2.ConstellationParams],
++) -> dict[WalkerStructure, list[q2.ConstellationParams]]:
++    """Utility used by tests and audit reports."""
++
++    grouped: dict[WalkerStructure, list[q2.ConstellationParams]] = {}
++    for item in params:
++        structure = WalkerStructure(
++            item.planes,
++            item.sats_per_plane,
++            item.phase_factor,
++        )
++        grouped.setdefault(structure, []).append(item)
++    return grouped
+diff --git "a/\344\273\243\347\240\201/\351\227\256\351\242\230\344\272\214/run_q2_optimized_search.py" "b/\344\273\243\347\240\201/\351\227\256\351\242\230\344\272\214/run_q2_optimized_search.py"
+new file mode 100644
+index 0000000..ebf845e
+--- /dev/null
++++ "b/\344\273\243\347\240\201/\351\227\256\351\242\230\344\272\214/run_q2_optimized_search.py"
+@@ -0,0 +1,342 @@
++"""Fair, margin-based, KD-tree accelerated search for Problem 2.
++
++This is a numerical search pipeline, not a formal continuous-time certificate.
++It replaces the biased global candidate cap with equal per-structure budgets and
++uses counterexample-guided refinement for the best candidates.
++"""
++
++from __future__ import annotations
++
++import argparse
++import csv
++from dataclasses import asdict
++import json
++from pathlib import Path
++from typing import Iterable
++
++import numpy as np
++
++import q2_constellation as q2
++import q2_fast_coverage as fast
++from q2_active_set import counterexample_guided_optimize, initial_active_set
++from q2_adaptive_verify import certify_continuous_coverage
++from q2_kdtree_coverage import KDTreeCoverageResult, evaluate_constellation_kdtree
++from q2_search_space import (
++    WalkerStructure,
++    minimum_reachable_inclination_deg,
++    sobol_continuous_params,
++    walker_structures,
++)
++
++
++ROOT = Path(__file__).resolve().parent
++RESULTS_DIR = ROOT / "results_optimized"
++
++
++def result_record(result: KDTreeCoverageResult, *, stage: str) -> dict:
++    params = result.params
++    if params is None:
++        raise ValueError("result.params is required")
++    worst_time = (
++        float(result.times_s[result.worst_time_index])
++        if result.worst_time_index >= 0
++        else None
++    )
++    return {
++        "stage": stage,
++        "planes": params.planes,
++        "sats_per_plane": params.sats_per_plane,
++        "total_satellites": params.total_satellites,
++        "phase_factor": params.phase_factor,
++        "inclination_deg": params.inclination_deg,
++        "raan0_deg": params.raan0_deg,
++        "u0_deg": params.u0_deg,
++        "c_min": result.c_min,
++        "min_margin": result.min_margin,
++        "single_coverage_time_rate": result.single_coverage_time_rate,
++        "strict_double_time_rate": result.strict_double_time_rate,
++        "max_uncovered_gap_s": result.max_uncovered_gap_s,
++        "worst_time_s": worst_time,
++        "mean_critical_points": float(np.mean(result.critical_point_counts_by_time))
++        if len(result.critical_point_counts_by_time)
++        else 0.0,
++        "max_critical_points": int(np.max(result.critical_point_counts_by_time))
++        if len(result.critical_point_counts_by_time)
++        else 0,
++        "evaluated_time_steps": result.evaluated_time_steps,
++        "stopped_early": result.stopped_early,
++        "backend": result.backend,
++    }
++
++
++def score_record(record: dict, q: int) -> tuple:
++    feasible = 1 if record["c_min"] >= q and record["min_margin"] >= 0.0 else 0
++    return (
++        feasible,
++        record["min_margin"],
++        record["single_coverage_time_rate"],
++        record["strict_double_time_rate"],
++        -record["max_uncovered_gap_s"],
++    )
++
++
++def write_csv(records: list[dict], path: Path) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    if not records:
++        path.write_text("", encoding="utf-8")
++        return
++    with path.open("w", newline="", encoding="utf-8-sig") as file:
++        writer = csv.DictWriter(file, fieldnames=list(records[0]))
++        writer.writeheader()
++        writer.writerows(records)
++
++
++def parse_args() -> argparse.Namespace:
++    parser = argparse.ArgumentParser(
++        description="Problem 2 optimized Walker search",
++        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
++    )
++    parser.add_argument("--start-total", type=int, default=40)
++    parser.add_argument("--stop-total", type=int, default=45)
++    parser.add_argument("--q", type=int, default=1)
++    parser.add_argument("--samples-per-structure", type=int, default=16)
++    parser.add_argument("--local-starts-per-structure", type=int, default=2)
++    parser.add_argument("--keep-top-per-total", type=int, default=10)
++    parser.add_argument("--inclination-min", type=float, default=None)
++    parser.add_argument("--inclination-max", type=float, default=90.0)
++    parser.add_argument("--screen-duration-hours", type=float, default=6.0)
++    parser.add_argument("--screen-time-step", type=float, default=300.0)
++    parser.add_argument("--separation-duration-hours", type=float, default=24.0)
++    parser.add_argument("--separation-time-step", type=float, default=120.0)
++    parser.add_argument("--active-interior-step", type=float, default=8.0)
++    parser.add_argument("--active-boundary-step", type=float, default=2.0)
++    parser.add_argument("--active-time-step", type=float, default=900.0)
++    parser.add_argument("--max-cegis-rounds", type=int, default=3)
++    parser.add_argument("--local-max-evaluations", type=int, default=80)
++    parser.add_argument("--margin-tolerance", type=float, default=1e-6)
++    parser.add_argument("--seed", type=int, default=20260710)
++    parser.add_argument("--continue-after-validated", action="store_true")
++    parser.add_argument("--adaptive-verify", action="store_true")
++    parser.add_argument("--adaptive-spatial-tolerance", type=float, default=0.05)
++    parser.add_argument("--adaptive-time-tolerance", type=float, default=1.0)
++    parser.add_argument("--adaptive-max-boxes", type=int, default=200000)
++    parser.add_argument("--no-representatives", action="store_true")
++    parser.add_argument("--output-dir", type=Path, default=RESULTS_DIR)
++    return parser.parse_args()
++
++
++def validate_args(args: argparse.Namespace) -> None:
++    if args.start_total <= 0 or args.stop_total < args.start_total:
++        raise ValueError("invalid satellite-total range")
++    if args.q <= 0:
++        raise ValueError("q must be positive")
++    if args.samples_per_structure <= 0:
++        raise ValueError("samples-per-structure must be positive")
++    if args.local_starts_per_structure <= 0:
++        raise ValueError("local-starts-per-structure must be positive")
++    if args.keep_top_per_total <= 0:
++        raise ValueError("keep-top-per-total must be positive")
++    if args.max_cegis_rounds <= 0:
++        raise ValueError("max-cegis-rounds must be positive")
++
++
++def main() -> None:
++    args = parse_args()
++    validate_args(args)
++
++    cfg = q2.CoverageConfig()
++    region = fast.LatLonRegion()
++    inclination_min = args.inclination_min
++    if inclination_min is None:
++        inclination_min = minimum_reachable_inclination_deg(
++            region_lat_max_deg=region.lat_max_deg,
++            coverage_angle_rad=cfg.coverage_angle_rad,
++        )
++    if args.inclination_max < inclination_min:
++        raise ValueError("inclination-max must be >= the inclination lower bound")
++
++    screen_times = q2.make_time_grid(
++        args.screen_duration_hours * 3600.0,
++        args.screen_time_step,
++    )
++    separation_times = q2.make_time_grid(
++        args.separation_duration_hours * 3600.0,
++        args.separation_time_step,
++    )
++    active_times = q2.make_time_grid(
++        args.screen_duration_hours * 3600.0,
++        args.active_time_step,
++    )
++
++    all_screen_records: list[dict] = []
++    all_refined_records: list[dict] = []
++    structure_audit: list[dict] = []
++    validated_solution: dict | None = None
++    adaptive_certificate: dict | None = None
++
++    master_seed = np.random.SeedSequence(args.seed)
++    total_seeds = master_seed.spawn(args.stop_total - args.start_total + 1)
++
++    for total_offset, total in enumerate(range(args.start_total, args.stop_total + 1)):
++        total_candidates: list[tuple[dict, q2.ConstellationParams, WalkerStructure]] = []
++        structures = walker_structures(total)
++        structure_seeds = total_seeds[total_offset].spawn(len(structures))
++
++        for structure, seed_sequence in zip(structures, structure_seeds):
++            seed = int(seed_sequence.generate_state(1, dtype=np.uint32)[0])
++            samples = sobol_continuous_params(
++                structure,
++                args.samples_per_structure,
++                inclination_min_deg=inclination_min,
++                inclination_max_deg=args.inclination_max,
++                seed=seed,
++            )
++            structure_records: list[tuple[dict, q2.ConstellationParams]] = []
++            for params in samples:
++                result = evaluate_constellation_kdtree(
++                    params,
++                    screen_times,
++                    config=cfg,
++                    region=region,
++                    q=args.q,
++                    include_representatives=not args.no_representatives,
++                    stop_if_margin_below=-0.02,
++                )
++                record = result_record(result, stage="screen")
++                all_screen_records.append(record)
++                structure_records.append((record, params))
++
++            structure_records.sort(
++                key=lambda item: score_record(item[0], args.q),
++                reverse=True,
++            )
++            selected = structure_records[: args.local_starts_per_structure]
++            for record, params in selected:
++                total_candidates.append((record, params, structure))
++
++            structure_audit.append(
++                {
++                    "total_satellites": total,
++                    "planes": structure.planes,
++                    "sats_per_plane": structure.sats_per_plane,
++                    "phase_factor": structure.phase_factor,
++                    "screen_evaluations": len(structure_records),
++                    "selected_for_refinement": len(selected),
++                }
++            )
++
++        total_candidates.sort(
++            key=lambda item: score_record(item[0], args.q),
++            reverse=True,
++        )
++        total_candidates = total_candidates[: args.keep_top_per_total]
++
++        for _screen_record, params, structure in total_candidates:
++            active_set = initial_active_set(
++                region,
++                active_times,
++                interior_step_deg=args.active_interior_step,
++                boundary_step_deg=args.active_boundary_step,
++            )
++            refined = counterexample_guided_optimize(
++                structure,
++                params,
++                active_set,
++                separation_times,
++                q=args.q,
++                config=cfg,
++                region=region,
++                inclination_min_deg=inclination_min,
++                inclination_max_deg=args.inclination_max,
++                max_rounds=args.max_cegis_rounds,
++                local_max_evaluations=args.local_max_evaluations,
++                margin_tolerance=args.margin_tolerance,
++                include_representatives=not args.no_representatives,
++            )
++            record = result_record(refined.separation_result, stage="refined")
++            record["cegis_rounds"] = refined.rounds
++            record["cegis_converged"] = refined.converged
++            record["active_constraint_count"] = len(refined.active_set.times_s)
++            all_refined_records.append(record)
++
++            if (
++                refined.converged
++                and record["c_min"] >= args.q
++                and record["min_margin"] >= -args.margin_tolerance
++            ):
++                if (
++                    validated_solution is None
++                    or record["total_satellites"] < validated_solution["total_satellites"]
++                    or (
++                        record["total_satellites"] == validated_solution["total_satellites"]
++                        and score_record(record, args.q) > score_record(validated_solution, args.q)
++                    )
++                ):
++                    validated_solution = record
++
++        if validated_solution is not None:
++            if args.adaptive_verify:
++                certificate_params = q2.ConstellationParams(
++                    planes=int(validated_solution["planes"]),
++                    sats_per_plane=int(validated_solution["sats_per_plane"]),
++                    phase_factor=int(validated_solution["phase_factor"]),
++                    inclination_deg=float(validated_solution["inclination_deg"]),
++                    raan0_deg=float(validated_solution["raan0_deg"]),
++                    u0_deg=float(validated_solution["u0_deg"]),
++                )
++                certificate = certify_continuous_coverage(
++                    certificate_params,
++                    region,
++                    duration_s=args.separation_duration_hours * 3600.0,
++                    q=args.q,
++                    config=cfg,
++                    spatial_tolerance_deg=args.adaptive_spatial_tolerance,
++                    time_tolerance_s=args.adaptive_time_tolerance,
++                    max_boxes=args.adaptive_max_boxes,
++                )
++                adaptive_certificate = {
++                    "status": certificate.status,
++                    "processed_boxes": certificate.processed_boxes,
++                    "covered_boxes": certificate.covered_boxes,
++                    "uncertain_boxes": certificate.uncertain_boxes,
++                    "max_depth": certificate.max_depth,
++                    "message": certificate.message,
++                    "failure_box": asdict(certificate.failure_box) if certificate.failure_box else None,
++                    "unresolved_boxes": [asdict(box) for box in certificate.unresolved_boxes],
++                }
++            if not args.continue_after_validated:
++                break
++
++    args.output_dir.mkdir(parents=True, exist_ok=True)
++    write_csv(all_screen_records, args.output_dir / "q2_optimized_screen.csv")
++    write_csv(all_refined_records, args.output_dir / "q2_optimized_refined.csv")
++    write_csv(structure_audit, args.output_dir / "q2_structure_audit.csv")
++
++    settings = vars(args).copy()
++    settings["output_dir"] = str(settings["output_dir"])
++    settings["computed_inclination_min_deg"] = inclination_min
++    summary = {
++        "note": (
++            "Numerical multi-fidelity search. A refined feasible result still "
++            "requires the separate adaptive continuous-time certificate stage."
++        ),
++        "settings": settings,
++        "screen_record_count": len(all_screen_records),
++        "refined_record_count": len(all_refined_records),
++        "validated_numerical_candidate": validated_solution,
++        "adaptive_certificate": adaptive_certificate,
++    }
++    (args.output_dir / "q2_optimized_summary.json").write_text(
++        json.dumps(summary, ensure_ascii=False, indent=2),
++        encoding="utf-8",
++    )
++
++    print("Problem 2 optimized search finished.")
++    print(f"Screen evaluations: {len(all_screen_records)}")
++    print(f"Refined candidates: {len(all_refined_records)}")
++    print(f"Best numerical candidate: {validated_solution}")
++    print(f"Outputs: {args.output_dir}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git "a/\344\273\243\347\240\201/\351\227\256\351\242\230\344\272\214/tests/test_q2_optimized.py" "b/\344\273\243\347\240\201/\351\227\256\351\242\230\344\272\214/tests/test_q2_optimized.py"
+new file mode 100644
+index 0000000..2e12080
+--- /dev/null
++++ "b/\344\273\243\347\240\201/\351\227\256\351\242\230\344\272\214/tests/test_q2_optimized.py"
+@@ -0,0 +1,101 @@
++from __future__ import annotations
++
++import math
++import unittest
++
++import numpy as np
++
++import q2_constellation as q2
++import q2_fast_coverage as fast
++from q2_adaptive_verify import SpaceTimeBox, conservative_space_radius_rad, subdivide_space_time_box
++from q2_coverage_margin import q_fold_margins_at_points
++from q2_kdtree_coverage import (
++    coverage_counts_and_margins_local,
++    critical_points_at_time_kdtree,
++    neighbor_pairs_kdtree,
++)
++from q2_search_space import fair_candidate_params_for_total, group_params_by_structure
++
++
++class SearchSpaceTests(unittest.TestCase):
++    def test_equal_budget_per_structure(self) -> None:
++        samples = list(
++            fair_candidate_params_for_total(
++                12,
++                samples_per_structure=3,
++                inclination_min_deg=49.0,
++                inclination_max_deg=60.0,
++                seed=7,
++            )
++        )
++        grouped = group_params_by_structure(samples)
++        self.assertTrue(grouped)
++        self.assertEqual({len(values) for values in grouped.values()}, {3})
++
++
++class KDTreeCoverageTests(unittest.TestCase):
++    def setUp(self) -> None:
++        rng = np.random.default_rng(42)
++        satellites = rng.normal(size=(30, 3))
++        points = rng.normal(size=(20, 3))
++        self.satellites = satellites / np.linalg.norm(satellites, axis=1, keepdims=True)
++        self.points = points / np.linalg.norm(points, axis=1, keepdims=True)
++        self.theta = math.radians(25.0)
++
++    def test_neighbor_pairs_match_dense_method(self) -> None:
++        expected = set(fast.neighbor_pairs_by_dot(self.satellites, 2.0 * self.theta))
++        actual = set(neighbor_pairs_kdtree(self.satellites, 2.0 * self.theta))
++        self.assertEqual(actual, expected)
++
++    def test_local_counts_and_margins_match_dense_q1_q2(self) -> None:
++        for q_value in (1, 2):
++            dense = q_fold_margins_at_points(
++                self.satellites,
++                self.points,
++                self.theta,
++                q=q_value,
++            )
++            local = coverage_counts_and_margins_local(
++                self.satellites,
++                self.points,
++                self.theta,
++                q=q_value,
++            )
++            np.testing.assert_array_equal(local.counts, dense.counts)
++            np.testing.assert_allclose(local.margins, dense.margins, atol=1e-12)
++
++    def test_region_corners_are_present(self) -> None:
++        region = fast.LatLonRegion()
++        points = critical_points_at_time_kdtree(
++            self.satellites,
++            self.theta,
++            region,
++            include_region_boundary=False,
++            include_representatives=False,
++        )
++        corners = fast.region_corner_points(region)
++        for corner in corners:
++            self.assertLess(np.min(np.linalg.norm(points - corner, axis=1)), 1e-9)
++
++
++class AdaptiveVerifierTests(unittest.TestCase):
++    def test_space_radius_is_conservative_positive(self) -> None:
++        box = SpaceTimeBox(4.0, 6.0, 73.0, 77.0, 0.0, 10.0)
++        self.assertAlmostEqual(conservative_space_radius_rad(box), math.radians(3.0))
++
++    def test_subdivision_preserves_domain(self) -> None:
++        box = SpaceTimeBox(4.0, 53.0, 73.0, 135.0, 0.0, 3600.0)
++        left, right = subdivide_space_time_box(box)
++        self.assertEqual(left.depth, 1)
++        self.assertEqual(right.depth, 1)
++        # The selected split must be contiguous in one dimension.
++        contiguous = (
++            math.isclose(left.lat_max_deg, right.lat_min_deg)
++            or math.isclose(left.lon_max_deg, right.lon_min_deg)
++            or math.isclose(left.time_max_s, right.time_min_s)
++        )
++        self.assertTrue(contiguous)
++
++
++if __name__ == "__main__":
++    unittest.main()

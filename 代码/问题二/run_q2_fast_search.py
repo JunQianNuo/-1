@@ -16,7 +16,8 @@ import csv
 from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
-from typing import Iterable
+from itertools import product
+from typing import Iterable, Iterator
 
 import numpy as np
 
@@ -47,6 +48,129 @@ def parse_inclinations(text: str) -> list[float]:
     if not values:
         raise argparse.ArgumentTypeError("inclinations must not be empty")
     return values
+
+
+def total_range(start_total: int, stop_total: int, *, search_order: str = "asc") -> range:
+    """Return total-satellite values in ascending or descending order."""
+
+    if start_total <= 0:
+        raise ValueError("start_total must be positive")
+    if stop_total < start_total:
+        raise ValueError("stop_total must be greater than or equal to start_total")
+    if search_order == "asc":
+        return range(start_total, stop_total + 1)
+    if search_order == "desc":
+        return range(stop_total, start_total - 1, -1)
+    raise ValueError("search_order must be 'asc' or 'desc'")
+
+
+def factor_pairs_for_search(
+    total_satellites: int,
+    *,
+    min_planes: int = 1,
+    max_planes: int | None = None,
+    min_sats_per_plane: int = 1,
+    max_sats_per_plane: int | None = None,
+) -> list[tuple[int, int]]:
+    """Factor pairs sorted for constellation search rather than arithmetic order.
+
+    The original factor order starts with ``(1, S)``, which is a poor first
+    candidate under a strict cap.  Here pairs closer to a balanced
+    multi-plane layout are tried first.
+    """
+
+    pairs = []
+    for planes, sats_per_plane in q2.factor_pairs(total_satellites):
+        if planes < min_planes or sats_per_plane < min_sats_per_plane:
+            continue
+        if max_planes is not None and planes > max_planes:
+            continue
+        if max_sats_per_plane is not None and sats_per_plane > max_sats_per_plane:
+            continue
+        pairs.append((planes, sats_per_plane))
+
+    return sorted(
+        pairs,
+        key=lambda pair: (
+            abs(np.log(pair[0] / pair[1])),
+            abs(pair[0] - np.sqrt(total_satellites)),
+            pair[0],
+        ),
+    )
+
+
+def candidate_params_for_factor_pair(
+    planes: int,
+    sats_per_plane: int,
+    inclinations_deg: Iterable[float],
+    phase_resolution_deg: float,
+) -> Iterator[q2.ConstellationParams]:
+    """Yield candidates for a fixed ``(planes, sats_per_plane)`` pair."""
+
+    omega_values, u_values = q2.phase_grid(planes, sats_per_plane, phase_resolution_deg)
+    for phase_factor, inc, raan0, u0 in product(
+        range(planes),
+        inclinations_deg,
+        omega_values,
+        u_values,
+    ):
+        yield q2.ConstellationParams(
+            planes=planes,
+            sats_per_plane=sats_per_plane,
+            phase_factor=phase_factor,
+            inclination_deg=float(inc),
+            raan0_deg=float(raan0),
+            u0_deg=float(u0),
+        )
+
+
+def candidate_params_for_total_stratified(
+    total_satellites: int,
+    inclinations_deg: Iterable[float],
+    phase_resolution_deg: float,
+    max_candidates: int | None,
+    *,
+    min_planes: int = 1,
+    max_planes: int | None = None,
+    min_sats_per_plane: int = 1,
+    max_sats_per_plane: int | None = None,
+) -> Iterator[q2.ConstellationParams]:
+    """Yield candidates across factor pairs in a round-robin stratified order."""
+
+    pairs = factor_pairs_for_search(
+        total_satellites,
+        min_planes=min_planes,
+        max_planes=max_planes,
+        min_sats_per_plane=min_sats_per_plane,
+        max_sats_per_plane=max_sats_per_plane,
+    )
+    if not pairs:
+        return
+
+    generators = [
+        candidate_params_for_factor_pair(
+            planes,
+            sats_per_plane,
+            inclinations_deg=inclinations_deg,
+            phase_resolution_deg=phase_resolution_deg,
+        )
+        for planes, sats_per_plane in pairs
+    ]
+    active = [True] * len(generators)
+    yielded = 0
+
+    while any(active):
+        for idx, generator in enumerate(generators):
+            if not active[idx]:
+                continue
+            try:
+                yield next(generator)
+                yielded += 1
+            except StopIteration:
+                active[idx] = False
+                continue
+            if max_candidates is not None and yielded >= max_candidates:
+                return
 
 
 def fast_result_record(result: fast.FastCoverageResult) -> dict:
@@ -80,6 +204,8 @@ def fast_result_record(result: fast.FastCoverageResult) -> dict:
         "fast_max_critical_points": int(np.max(result.critical_point_counts_by_time))
         if len(result.critical_point_counts_by_time)
         else 0,
+        "fast_stopped_early": bool(result.stopped_early),
+        "fast_evaluated_time_steps": int(result.evaluated_time_steps),
     }
 
 
@@ -146,6 +272,18 @@ def write_records_csv(rows: list[dict], path: Path) -> None:
         writer.writerows(rows)
 
 
+def append_record_csv(record: dict, path: Path) -> None:
+    """Append one record to CSV, writing the header if the file is new."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_header = not path.exists() or path.stat().st_size == 0
+    with path.open("a", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=list(record.keys()))
+        if write_header:
+            writer.writeheader()
+        writer.writerow(record)
+
+
 def run_fast_search(
     *,
     start_total: int,
@@ -163,6 +301,13 @@ def run_fast_search(
     config: q2.CoverageConfig | None = None,
     stop_on_fast_feasible: bool = False,
     include_representatives: bool = True,
+    search_order: str = "asc",
+    stop_if_min_count_below: int | None = None,
+    stream_output_dir: Path | None = None,
+    min_planes: int = 1,
+    max_planes: int | None = None,
+    min_sats_per_plane: int = 1,
+    max_sats_per_plane: int | None = None,
 ) -> FastSearchRunResult:
     """Run bounded Top-K fast screening and optional grid verification."""
 
@@ -180,13 +325,23 @@ def run_fast_search(
     best_fast_record: dict | None = None
     first_fast_feasible: dict | None = None
     evaluated_count = 0
+    stream_fast_path = (
+        stream_output_dir / "q2_fast_search_stream_fast_records.csv" if stream_output_dir is not None else None
+    )
+    stream_verified_path = (
+        stream_output_dir / "q2_fast_search_stream_verified_records.csv" if stream_output_dir is not None else None
+    )
 
-    for total in range(start_total, stop_total + 1):
-        for params in q2.candidate_params_for_total(
+    for total in total_range(start_total, stop_total, search_order=search_order):
+        for params in candidate_params_for_total_stratified(
             total_satellites=total,
             inclinations_deg=inclinations_deg,
             phase_resolution_deg=phase_resolution_deg,
             max_candidates=max_candidates_per_total,
+            min_planes=min_planes,
+            max_planes=max_planes,
+            min_sats_per_plane=min_sats_per_plane,
+            max_sats_per_plane=max_sats_per_plane,
         ):
             fast_result = fast.evaluate_constellation_fast(
                 params,
@@ -194,9 +349,12 @@ def run_fast_search(
                 config=cfg,
                 region=region,
                 include_representatives=include_representatives,
+                stop_if_min_count_below=stop_if_min_count_below,
             )
             record = fast_result_record(fast_result)
             evaluated_count += 1
+            if stream_fast_path is not None:
+                append_record_csv(record, stream_fast_path)
             top_fast_records = keep_top_records(top_fast_records, record, keep_top_fast)
 
             if best_fast_record is None or fast_record_score(record) > fast_record_score(best_fast_record):
@@ -226,6 +384,8 @@ def run_fast_search(
         verified_record["fast_rank"] = rank
         verified_record.update(q2.evaluation_record(grid_result))
         verified_records.append(verified_record)
+        if stream_verified_path is not None:
+            append_record_csv(verified_record, stream_verified_path)
 
         if best_verified_record is None or verified_record_score(verified_record) > verified_record_score(
             best_verified_record
@@ -280,9 +440,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--start-total", type=int, default=40)
     parser.add_argument("--stop-total", type=int, default=45)
+    parser.add_argument("--search-order", choices=["asc", "desc"], default="asc")
     parser.add_argument("--inclinations", type=parse_inclinations, default=parse_inclinations("49,50,51,52,53"))
     parser.add_argument("--phase-resolution", type=float, default=30.0)
     parser.add_argument("--max-candidates-per-total", type=int, default=300)
+    parser.add_argument("--min-planes", type=int, default=1)
+    parser.add_argument("--max-planes", type=int, default=0, help="use 0 for no upper bound")
+    parser.add_argument("--min-sats-per-plane", type=int, default=1)
+    parser.add_argument("--max-sats-per-plane", type=int, default=0, help="use 0 for no upper bound")
     parser.add_argument("--keep-top-fast", type=int, default=30)
     parser.add_argument("--verify-top", type=int, default=5)
     parser.add_argument("--duration-hours", type=float, default=6.0)
@@ -291,6 +456,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--verify-grid-step", type=float, default=6.0)
     parser.add_argument("--stop-on-fast-feasible", action="store_true")
     parser.add_argument("--no-representatives", action="store_true")
+    parser.add_argument(
+        "--stop-if-min-count-below",
+        type=int,
+        default=1,
+        help="early-stop a fast candidate once any evaluated time slice has min count below this value; use -1 to disable",
+    )
     parser.add_argument("--output-dir", type=Path, default=RESULTS_DIR)
     return parser
 
@@ -301,6 +472,11 @@ def main() -> None:
     max_candidates = args.max_candidates_per_total
     if max_candidates == 0:
         max_candidates = None
+    stop_threshold = args.stop_if_min_count_below
+    if stop_threshold < 0:
+        stop_threshold = None
+    max_planes = args.max_planes if args.max_planes > 0 else None
+    max_sats_per_plane = args.max_sats_per_plane if args.max_sats_per_plane > 0 else None
 
     region = fast.LatLonRegion()
     fast_times_s = q2.make_time_grid(args.duration_hours * 3600.0, args.fast_time_step)
@@ -323,14 +499,26 @@ def main() -> None:
         config=config,
         stop_on_fast_feasible=args.stop_on_fast_feasible,
         include_representatives=not args.no_representatives,
+        search_order=args.search_order,
+        stop_if_min_count_below=stop_threshold,
+        stream_output_dir=args.output_dir,
+        min_planes=args.min_planes,
+        max_planes=max_planes,
+        min_sats_per_plane=args.min_sats_per_plane,
+        max_sats_per_plane=max_sats_per_plane,
     )
 
     settings = {
         "start_total": args.start_total,
         "stop_total": args.stop_total,
+        "search_order": args.search_order,
         "inclinations_deg": args.inclinations,
         "phase_resolution_deg": args.phase_resolution,
         "max_candidates_per_total": max_candidates,
+        "min_planes": args.min_planes,
+        "max_planes": max_planes,
+        "min_sats_per_plane": args.min_sats_per_plane,
+        "max_sats_per_plane": max_sats_per_plane,
         "keep_top_fast": args.keep_top_fast,
         "verify_top": args.verify_top,
         "duration_hours": args.duration_hours,
@@ -338,6 +526,7 @@ def main() -> None:
         "verify_time_step_s": args.verify_time_step,
         "verify_grid_step_deg": args.verify_grid_step,
         "include_representatives": not args.no_representatives,
+        "stop_if_min_count_below": stop_threshold,
     }
     save_fast_search_outputs(result, args.output_dir, settings)
 

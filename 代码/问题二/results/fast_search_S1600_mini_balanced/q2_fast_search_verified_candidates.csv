@@ -1,0 +1,4 @@
+﻿planes,sats_per_plane,total_satellites,phase_factor,inclination_deg,raan0_deg,u0_deg,fast_c_min,fast_single_time_rate,fast_strict_double_time_rate,fast_max_uncovered_gap_s,fast_worst_time_s,fast_mean_critical_points,fast_max_critical_points,fast_stopped_early,fast_evaluated_time_steps,fast_rank,C1,C2,avg_multiplicity,c_min,max_gap_s,strict_double_time_rate
+64,25,1600,0,50.0,0.0,0.0,0,0.6666666666666666,0.0,900.0,1800.0,8759.333333333334,9149,True,3,1,0.997652878740615,0.8894307477277663,3.1489315509884723,0,900.0,0.0
+40,40,1600,0,50.0,0.0,0.0,0,0.0,0.0,0.0,0.0,9924.0,9924,True,1,2,0.9984105073333421,0.9829643475607284,3.15967974243585,0,900.0,0.6
+32,50,1600,0,50.0,0.0,0.0,0,0.0,0.0,0.0,0.0,9685.0,9685,True,1,3,0.9980573252737728,0.9496523318055357,3.145168476500371,0,900.0,0.0

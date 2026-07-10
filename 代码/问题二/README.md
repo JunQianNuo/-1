@@ -16,6 +16,7 @@
 | `q2_relaxed_criteria.py` | **R03/R04/R06**：近全覆盖、护带域、二重空间容差判定层（overlay，不改覆盖模型）|
 | `run_q2_fast_search.py` | 快速筛选搜索入口（`--fix-raan0`、`--critical-min` 开关）|
 | `run_q2_fullday_scan.py` | **整恒星日 grid 扫描器**（best-per-S，R02 固定 Ω₀），定位最小 $S$ 的权威入口 |
+| `q2_bilp_setcover.py` | **替代算法**：BILP 0-1 集合覆盖最少卫星（候选池 + LP 松弛下界 + 贪心 + HiGHS milp）；见 [[问题分析/星链系统-文献驱动版/问题2-BILP集合覆盖尝试与下界评估]] |
 | `test_q2_constellation.py` / `test_q2_fast_coverage.py` / `test_q2_fast_search.py` | 基础与快速搜索单元测试 |
 | `test_q2_relaxation.py` | R02 时移等价、R07 子集、R01 证伪等测试 |
 | `test_q2_lipschitz_certificate.py` | R05 证书：$L_x,L_t$ 真上界抽验、三分类逻辑 |

@@ -51,5 +51,15 @@
       "C2_area_feasible": true
     }
   ],
-  "note": "Upper bound under this parameterization / geometry-locked band / relaxed criteria; NOT a strict global lower bound. Area lower bound S>=40."
+  "note": "Upper bound under this parameterization / geometry-locked band / relaxed criteria; NOT a strict global lower bound. Area lower bound S>=40.",
+  "inclination_search": {
+    "swept": "i in [48,52] deg, step 0.5 (full sidereal day 2deg/300s)",
+    "optimum": "i=50 deg (peak C1 & C2; i<49 coverage drops, i>51 C1<0.999)",
+    "feasible_i_window": {
+      "S1512_36x42": "only i≈50° (knife-edge)",
+      "S1520_38x40": "i in [49.5,52]° (robust)"
+    },
+    "does_finer_i_reduce_S": "no; S in {1470,1476,1480} infeasible for all i in [48,52] -> 1512 remains band minimum"
+  },
+  "dimensions_searched": "M (plane count), N (sats/plane, band [38,42]), i ([48,52]deg) all locally refined; Omega0 fixed by symmetry (R02)"
 }

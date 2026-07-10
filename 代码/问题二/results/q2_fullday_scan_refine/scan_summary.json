@@ -1,0 +1,58 @@
+{
+  "totals": [
+    1450,
+    1500,
+    1550
+  ],
+  "grid_step_deg": 2.0,
+  "time_step_s": 300.0,
+  "duration_hours": 23.934469444444442,
+  "num_evaluated": 288,
+  "elapsed_s": 894.3,
+  "best_per_total": {
+    "1450": {
+      "total_satellites": 1450,
+      "planes": 50,
+      "sats_per_plane": 29,
+      "phase_factor": 1,
+      "inclination_deg": 50.0,
+      "u0_deg": 10.345,
+      "C1": 0.995604,
+      "c_min": 0,
+      "max_gap_s": 300.0,
+      "avg_mult": 2.8969,
+      "C2_area": 0.90564,
+      "C2_strict": 0.0
+    },
+    "1500": {
+      "total_satellites": 1500,
+      "planes": 50,
+      "sats_per_plane": 30,
+      "phase_factor": 1,
+      "inclination_deg": 53.0,
+      "u0_deg": 8.0,
+      "C1": 0.997666,
+      "c_min": 0,
+      "max_gap_s": 300.0,
+      "avg_mult": 2.9131,
+      "C2_area": 0.882712,
+      "C2_strict": 0.0
+    },
+    "1550": {
+      "total_satellites": 1550,
+      "planes": 50,
+      "sats_per_plane": 31,
+      "phase_factor": 0,
+      "inclination_deg": 53.0,
+      "u0_deg": 9.677,
+      "C1": 0.999041,
+      "c_min": 0,
+      "max_gap_s": 300.0,
+      "avg_mult": 3.0095,
+      "C2_area": 0.894977,
+      "C2_strict": 0.0
+    }
+  },
+  "min_strict_feasible_S": null,
+  "min_relaxed_C1_0999_S": 1550
+}

@@ -1,35 +1,63 @@
 # 问题二 Python 代码说明
 
-本目录是“问题二：多轨道面星座组网优化设计”的 Python 数值实现初版。
+本目录是“问题二：多轨道面星座组网优化设计”的 Python 数值实现。
 
-> 当前代码用于验证“地固系网格—时间覆盖判定”和递增规模搜索流程；`single_search` 仍是粗搜索，不是最终最优解证明。
+> **状态（已完成）**：地固系网格—时间覆盖判定 + 整恒星日搜索 + 假设驱动松弛（R02/R03/R05/R06/R07）+ 几何锁定降维 + 局部最小 $MN$ 精定。
+> **最终答案（松弛口径）**：最小接受星数 $S^\ast\approx1512$（Walker $M{=}36,N{=}42,i{=}50^\circ,\Omega_0{=}u_0{=}0,F{=}0$），工程稳健取 $1520$（$38{\times}40$）。详见 `results/q2_final_answer.json` 与 [[问题分析/星链系统-文献驱动版/18-问题二算法条件松弛与假设驱动加速方案]] §15。
 
 ## 文件结构
 
 | 文件/目录 | 说明 |
 |:--|:--|
-| `q2_constellation.py` | 覆盖几何、Walker-Delta 星座参数化、指标计算、候选枚举与单重覆盖搜索接口 |
-| `q2_fast_coverage.py` | 加速算法核心：邻近卫星对筛选、小圆交点、区域边界交点、弧段代表点、单时刻临界点、跨时间快速评价 |
-| `run_q2_fast_search.py` | 快速筛选搜索入口：临界点—代表点法筛候选，Top-K 候选再做网格复核 |
-| `test_q2_constellation.py` | 单元测试 |
-| `test_q2_fast_coverage.py` | 加速算法几何基础的单元测试 |
-| `test_q2_fast_search.py` | 快速搜索入口的单元测试 |
-| `run_q2_smoke.py` | 最小 smoke run，用于确认模型链路可运行 |
-| `run_q2_single_search.py` | 问题二单重覆盖正式粗搜索脚本 |
-| `run_q2_scan.py` | 多阶段扫描：粗搜 → 中网格验证 → 细网格复核 → 二重覆盖 |
-| `results/` | CSV/JSON 结果输出目录 |
-| `results/scan/` | 多阶段扫描结果子目录 |
-| `figures/` | 图表输出目录 |
+| `q2_constellation.py` | 覆盖几何、Walker-Delta 参数化、指标、候选枚举、单/双搜索；`phase_grid(fix_raan0)`（R02 固定 Ω₀）、`symmetry_reduced_window_s` / `window_convergence_check`（R01 弃用后的窗长验证工具）|
+| `q2_fast_coverage.py` | 加速评价核心：邻近卫星对、小圆交点、区域边界交点、临界点；`include_representatives=False` 即 R07 Deng 命题3 充分集 |
+| `q2_coverage_margin.py` | 连续 $q$ 重覆盖余量（第 $q$ 近卫星点积余量），供证书器复用 |
+| `q2_lipschitz_certificate.py` | **R05**：角度空间 Lipschitz 余量连续覆盖证书（单遍替代自适应盒），$L_x{=}1,L_t{=}n_0{+}\omega_e$ |
+| `q2_relaxed_criteria.py` | **R03/R04/R06**：近全覆盖、护带域、二重空间容差判定层（overlay，不改覆盖模型）|
+| `run_q2_fast_search.py` | 快速筛选搜索入口（`--fix-raan0`、`--critical-min` 开关）|
+| `run_q2_fullday_scan.py` | **整恒星日 grid 扫描器**（best-per-S，R02 固定 Ω₀），定位最小 $S$ 的权威入口 |
+| `test_q2_constellation.py` / `test_q2_fast_coverage.py` / `test_q2_fast_search.py` | 基础与快速搜索单元测试 |
+| `test_q2_relaxation.py` | R02 时移等价、R07 子集、R01 证伪等测试 |
+| `test_q2_lipschitz_certificate.py` | R05 证书：$L_x,L_t$ 真上界抽验、三分类逻辑 |
+| `test_q2_relaxed_criteria.py` | R03/R04/R06 判定层测试 |
+| `run_q2_smoke.py` / `run_q2_single_search.py` / `run_q2_scan.py` | 早期 smoke / 粗搜 / 多阶段扫描（保留）|
+| `results/q2_final_answer.json` | **最终答案记录**（1512 与 1520 两构型、双口径指标、几何锁定说明）|
+| `results/q2_fullday_scan_coarse/`、`q2_fullday_scan_refine/` | 整日 S 扫描原始数据（前沿曲线）|
+| `results/` / `figures/` | 结果与图表输出目录 |
 
 ## 运行测试
 
 ```bash
 python test_q2_constellation.py
-python -m unittest test_q2_fast_coverage.py
-python -m unittest test_q2_fast_search.py
+python -m unittest test_q2_fast_coverage test_q2_fast_search \
+  test_q2_relaxation test_q2_lipschitz_certificate test_q2_relaxed_criteria
 ```
 
-当前加速算法仍处于模块化实现阶段；正式大规模搜索前，应同时通过上述两组测试。
+全部 50 项测试应通过（11 + 39）。
+
+## 最终结果与复现
+
+**最小接受星数（松弛口径，整恒星日 $1^\circ/150\mathrm s$ 复核一致）**：
+
+| 构型 | $S$ | $\mathcal C_1$ | $\mathcal C_2$(面积) | 说明 |
+|:--|--:|--:|--:|:--|
+| $M{=}36,N{=}42,i{=}50^\circ$ | **1512** | 0.9995 | 0.9547 | 带内最小（R03 单重 + 面积二重双达标）|
+| $M{=}38,N{=}40,i{=}50^\circ$ | 1520 | 0.9999 | 0.9622 | 工程稳健（二重余量更大）|
+
+要点：**严格逐点 $c_{\min}\ge1$ 与严格整区二重在 $S\le1600$ 均不可行**（残差为西南边界亚时间步瞬时 / 整区二重恒为 0），故交付口径为近全覆盖 $\mathcal C_1\ge0.999$（R03）与面积—时间二重 $\mathcal C_2\ge0.95$。$N\approx40$（覆盖带 $N\ge\pi/\theta$）、$i\approx50^\circ$（纬度贴合）被几何锁定，搜索降为面数 $M$ 一维 + 带内局部精定。
+
+复现流程：
+
+```bash
+# 1) 整恒星日 S 前沿扫描（best-per-S）
+python run_q2_fullday_scan.py --totals 800,1000,1200,1400,1600 \
+  --grid-step 2 --time-step 300 --max-pairs 4 --inclinations 50,53 --u0-count 4
+
+# 2) 结果落于 results/q2_fullday_scan_coarse/scan_summary.json
+#    最终答案记录见 results/q2_final_answer.json
+```
+
+> 结论为该参数化、几何锁定带与松弛口径下的**最小接受星数（上界）**，非严格全局下界；唯一便宜的严格下界是面积下界 $S\ge\lceil A_D/A_{\mathrm{sat}}\rceil=40$。
 
 ## 加速算法当前接口
 
@@ -187,10 +215,10 @@ $$
 \theta=\frac{r_g}{R_e}.
 $$
 
-单重覆盖可行性在程序中按
+单重覆盖可行性：严格判据 $\min_{G_j,t_l} c(G_j,t_l)\ge 1$ 在 $S\le1600$ 不可行（测度零边界瞬时），**交付口径改用近全覆盖 R03**：
 
 $$
-\min_{G_j,t_l} c(G_j,t_l)\ge 1
+\mathcal C_1\ge 1-\epsilon_0\ (\epsilon_0=10^{-3})\quad\text{或}\quad G_{\max}\le\tau_{\mathrm{tol}}.
 $$
 
-判定。
+二重覆盖：严格整区 $\mathcal C_2^{\mathrm{strict}}\ge0.95$ 恒为 0，**交付口径改用面积—时间** $\mathcal C_2\ge0.95$。判定层实现于 `q2_relaxed_criteria.py`，连续覆盖证书实现于 `q2_lipschitz_certificate.py`。口径与假设的完整登记见 [[问题分析/星链系统-文献驱动版/假设台账-文献驱动版]] §4.2.1 与 [[问题分析/星链系统-文献驱动版/18-问题二算法条件松弛与假设驱动加速方案]]。

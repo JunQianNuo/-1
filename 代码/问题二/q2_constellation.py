@@ -202,6 +202,80 @@ def make_time_grid(duration_s: float = 86164.09, step_s: float = 180.0) -> np.nd
     return _axis_grid_with_endpoint(0.0, duration_s, step_s)
 
 
+SIDEREAL_DAY_S: float = 86164.09
+
+
+def symmetry_reduced_window_s(
+    planes: int,
+    config: CoverageConfig | None = None,
+    *,
+    sidereal_day_s: float = SIDEREAL_DAY_S,
+) -> float:
+    """Rotational-symmetry period ``max(T_orbit, T_sid/M)`` of the Walker SET.
+
+    .. warning::
+        Q2-R01 originally proposed this as a reduced fixed-region evaluation
+        window.  Both a direct derivation and a numerical calibration (see
+        18-...松弛与假设驱动加速方案.md §15.5) show this is **invalid for a
+        fixed target region**: the Walker ``M``-fold symmetry maps plane ``m`` to
+        ``m+1`` via a RAAN rotation ``2*pi/M`` *together with* an in-track shift
+        ``2*pi*F/(MN)``.  Pure Earth rotation advances only the relative
+        longitude (RAAN side), not the in-track phase, so
+        ``coverage(D, phi+2*pi/M) != coverage(D, phi)`` for a fixed ``D``.
+        Region coverage is therefore **not** ``2*pi/M``-periodic and a full
+        sidereal day is still required.  This function is retained only as a
+        constellation-set diagnostic; do not use it to shorten feasibility
+        evaluation.  Use :func:`window_convergence_check` instead.
+    """
+
+    if planes <= 0:
+        raise ValueError("planes must be positive")
+    cfg = config or CoverageConfig()
+    return max(cfg.orbital_period_s, sidereal_day_s / planes)
+
+
+def window_convergence_check(
+    params: ConstellationParams,
+    lat_deg: np.ndarray,
+    lon_deg: np.ndarray,
+    *,
+    base_window_s: float = SIDEREAL_DAY_S,
+    step_s: float = 300.0,
+    factor: float = 2.0,
+    config: CoverageConfig | None = None,
+) -> dict:
+    """Compare coverage metrics on a base window and a ``factor``x window.
+
+    This is the surviving Q2-R01 verification hook: instead of *assuming* a
+    reduced window is safe, it measures whether extending the window from
+    ``base_window_s`` to ``factor * base_window_s`` changes the key metrics.  A
+    candidate window is only trustworthy when the returned discrepancies are
+    below the caller's tolerance.
+    """
+
+    if factor <= 1.0:
+        raise ValueError("factor must be > 1")
+    cfg = config or CoverageConfig()
+    base = evaluate_constellation(
+        params, lat_deg, lon_deg, make_time_grid(base_window_s, step_s), cfg
+    )
+    extended = evaluate_constellation(
+        params, lat_deg, lon_deg, make_time_grid(base_window_s * factor, step_s), cfg
+    )
+    return {
+        "base_window_s": float(base_window_s),
+        "extended_window_s": float(base_window_s * factor),
+        "c1_base": base.coverage_rate_q1,
+        "c1_extended": extended.coverage_rate_q1,
+        "c1_abs_diff": abs(base.coverage_rate_q1 - extended.coverage_rate_q1),
+        "cmin_base": base.c_min,
+        "cmin_extended": extended.c_min,
+        "cmin_consistent": base.c_min == extended.c_min,
+        "max_gap_base_s": base.max_gap_s,
+        "max_gap_extended_s": extended.max_gap_s,
+    }
+
+
 def satellite_unit_vectors(
     params: ConstellationParams,
     times_s: np.ndarray,
@@ -389,8 +463,24 @@ def phase_grid(
     planes: int,
     sats_per_plane: int,
     phase_resolution_deg: float,
+    *,
+    fix_raan0: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Search Ω0 and u0 in symmetry fundamental intervals."""
+    """Search Ω0 and u0 in symmetry fundamental intervals.
+
+    Relaxation Q2-R02 (see 18-问题二算法条件松弛与假设驱动加速方案.md):
+    over an integer/period-complete evaluation window the pair ``(Ω0, u0)``
+    collapses to a single effective phase
+
+        ``ũ0 = u0 + (n0 / ω_e) · Ω0  (mod 2π)``,
+
+    because a shift ``δ`` in ``Ω0`` combined with a shift ``-(n0/ω_e)·δ`` in
+    the in-track phase is exactly equivalent to a time shift ``δ/ω_e`` of the
+    whole Earth-fixed constellation (the ``R3(-ω_e t)`` and ``R3(δ)`` rotations
+    commute).  Time-aggregated metrics are therefore invariant, so scanning the
+    two-dimensional phase grid is redundant.  With ``fix_raan0=True`` we fix
+    ``Ω0=0`` and search only ``u0``, removing one continuous dimension exactly.
+    """
 
     if planes <= 0 or sats_per_plane <= 0:
         raise ValueError("planes and sats_per_plane must be positive")
@@ -399,12 +489,17 @@ def phase_grid(
 
     omega_width = 360.0 / planes
     u_width = 360.0 / sats_per_plane
-    k_omega = max(4, math.ceil(omega_width / phase_resolution_deg))
     k_u = max(4, math.ceil(u_width / phase_resolution_deg))
-    return (
-        np.linspace(0.0, omega_width, k_omega, endpoint=False),
-        np.linspace(0.0, u_width, k_u, endpoint=False),
-    )
+    u_values = np.linspace(0.0, u_width, k_u, endpoint=False)
+
+    if fix_raan0:
+        # Q2-R02: single representative RAAN offset; ũ0 is swept by u0 alone.
+        omega_values = np.array([0.0])
+    else:
+        k_omega = max(4, math.ceil(omega_width / phase_resolution_deg))
+        omega_values = np.linspace(0.0, omega_width, k_omega, endpoint=False)
+
+    return omega_values, u_values
 
 
 def candidate_params_for_total(
@@ -412,12 +507,19 @@ def candidate_params_for_total(
     inclinations_deg: Iterable[float],
     phase_resolution_deg: float = 2.0,
     max_candidates: int | None = None,
+    *,
+    fix_raan0: bool = False,
 ) -> Iterable[ConstellationParams]:
-    """Yield Walker-Delta candidates for a fixed total satellite count."""
+    """Yield Walker-Delta candidates for a fixed total satellite count.
+
+    ``fix_raan0`` enables relaxation Q2-R02 (fix Ω0=0, search only u0).
+    """
 
     yielded = 0
     for planes, sats_per_plane in factor_pairs(total_satellites):
-        omega_values, u_values = phase_grid(planes, sats_per_plane, phase_resolution_deg)
+        omega_values, u_values = phase_grid(
+            planes, sats_per_plane, phase_resolution_deg, fix_raan0=fix_raan0
+        )
         for phase_factor, inc, raan0, u0 in product(
             range(planes), inclinations_deg, omega_values, u_values
         ):

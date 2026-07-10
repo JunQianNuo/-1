@@ -104,10 +104,14 @@ def candidate_params_for_factor_pair(
     sats_per_plane: int,
     inclinations_deg: Iterable[float],
     phase_resolution_deg: float,
+    *,
+    fix_raan0: bool = False,
 ) -> Iterator[q2.ConstellationParams]:
     """Yield candidates for a fixed ``(planes, sats_per_plane)`` pair."""
 
-    omega_values, u_values = q2.phase_grid(planes, sats_per_plane, phase_resolution_deg)
+    omega_values, u_values = q2.phase_grid(
+        planes, sats_per_plane, phase_resolution_deg, fix_raan0=fix_raan0
+    )
     for phase_factor, inc, raan0, u0 in product(
         range(planes),
         inclinations_deg,
@@ -134,6 +138,7 @@ def candidate_params_for_total_stratified(
     max_planes: int | None = None,
     min_sats_per_plane: int = 1,
     max_sats_per_plane: int | None = None,
+    fix_raan0: bool = False,
 ) -> Iterator[q2.ConstellationParams]:
     """Yield candidates across factor pairs in a round-robin stratified order."""
 
@@ -153,6 +158,7 @@ def candidate_params_for_total_stratified(
             sats_per_plane,
             inclinations_deg=inclinations_deg,
             phase_resolution_deg=phase_resolution_deg,
+            fix_raan0=fix_raan0,
         )
         for planes, sats_per_plane in pairs
     ]
@@ -308,6 +314,7 @@ def run_fast_search(
     max_planes: int | None = None,
     min_sats_per_plane: int = 1,
     max_sats_per_plane: int | None = None,
+    fix_raan0: bool = False,
 ) -> FastSearchRunResult:
     """Run bounded Top-K fast screening and optional grid verification."""
 
@@ -342,6 +349,7 @@ def run_fast_search(
             max_planes=max_planes,
             min_sats_per_plane=min_sats_per_plane,
             max_sats_per_plane=max_sats_per_plane,
+            fix_raan0=fix_raan0,
         ):
             fast_result = fast.evaluate_constellation_fast(
                 params,
@@ -457,6 +465,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stop-on-fast-feasible", action="store_true")
     parser.add_argument("--no-representatives", action="store_true")
     parser.add_argument(
+        "--critical-min",
+        action="store_true",
+        help="Q2-R07: use the Deng-2021 Prop.3 sufficient critical set only "
+        "(corners + boundary + footprint intersections), dropping redundant "
+        "representative points; alias implying --no-representatives",
+    )
+    parser.add_argument(
+        "--fix-raan0",
+        action="store_true",
+        help="Q2-R02: fix Omega0=0 and search only u0 (valid for period-complete "
+        "windows because (Omega0,u0) collapse to a single effective phase)",
+    )
+    parser.add_argument(
         "--stop-if-min-count-below",
         type=int,
         default=1,
@@ -478,6 +499,9 @@ def main() -> None:
     max_planes = args.max_planes if args.max_planes > 0 else None
     max_sats_per_plane = args.max_sats_per_plane if args.max_sats_per_plane > 0 else None
 
+    # Q2-R07: --critical-min implies dropping representative points.
+    include_representatives = not (args.no_representatives or args.critical_min)
+
     region = fast.LatLonRegion()
     fast_times_s = q2.make_time_grid(args.duration_hours * 3600.0, args.fast_time_step)
     verify_times_s = q2.make_time_grid(args.duration_hours * 3600.0, args.verify_time_step)
@@ -498,7 +522,7 @@ def main() -> None:
         verify_top=args.verify_top,
         config=config,
         stop_on_fast_feasible=args.stop_on_fast_feasible,
-        include_representatives=not args.no_representatives,
+        include_representatives=include_representatives,
         search_order=args.search_order,
         stop_if_min_count_below=stop_threshold,
         stream_output_dir=args.output_dir,
@@ -506,6 +530,7 @@ def main() -> None:
         max_planes=max_planes,
         min_sats_per_plane=args.min_sats_per_plane,
         max_sats_per_plane=max_sats_per_plane,
+        fix_raan0=args.fix_raan0,
     )
 
     settings = {
@@ -525,7 +550,9 @@ def main() -> None:
         "fast_time_step_s": args.fast_time_step,
         "verify_time_step_s": args.verify_time_step,
         "verify_grid_step_deg": args.verify_grid_step,
-        "include_representatives": not args.no_representatives,
+        "include_representatives": include_representatives,
+        "critical_min": bool(args.critical_min or args.no_representatives),
+        "fix_raan0": bool(args.fix_raan0),
         "stop_if_min_count_below": stop_threshold,
     }
     save_fast_search_outputs(result, args.output_dir, settings)

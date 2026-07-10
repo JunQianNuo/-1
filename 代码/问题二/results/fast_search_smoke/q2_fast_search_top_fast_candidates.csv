@@ -1,3 +1,0 @@
-﻿planes,sats_per_plane,total_satellites,phase_factor,inclination_deg,raan0_deg,u0_deg,fast_c_min,fast_single_time_rate,fast_strict_double_time_rate,fast_max_uncovered_gap_s,fast_worst_time_s,fast_mean_critical_points,fast_max_critical_points
-1,1,1,0,0.0,0.0,0.0,0,0.0,0.0,7.2,0.0,12.0,12
-1,1,1,0,0.0,0.0,90.0,0,0.0,0.0,7.2,0.0,20.0,20

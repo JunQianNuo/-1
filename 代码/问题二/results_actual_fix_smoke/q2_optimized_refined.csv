@@ -1,3 +1,0 @@
-﻿stage,planes,sats_per_plane,total_satellites,phase_factor,inclination_deg,raan0_deg,u0_deg,c_min,min_margin,single_coverage_time_rate,strict_double_time_rate,max_uncovered_gap_s,worst_time_s,mean_critical_points,max_critical_points,evaluated_time_steps,stopped_early,backend,cegis_rounds,cegis_converged,active_constraint_count
-refined,40,1,40,34,48.449432674051224,7.032090970460059,23.036027066409588,0,-0.08757276350126353,0.0,0.0,86400.0,4680.0,25.070735090152567,44,721,False,scipy-cKDTree,1,False,14939
-refined,20,2,40,15,59.513530673895986,0.864292230663132,150.30396027490497,0,-0.09286669507989709,0.0,0.0,86400.0,66960.0,28.723994452149793,54,721,False,scipy-cKDTree,1,False,14939

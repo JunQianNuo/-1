@@ -254,32 +254,18 @@ def critical_points_at_time_kdtree(
 
 
 def _longest_false_gap_s(values: np.ndarray, times_s: np.ndarray) -> float:
-    """Return the longest sampled uncovered interval from actual time coordinates."""
-
-    covered = np.asarray(values, dtype=bool)
-    times = np.asarray(times_s, dtype=float)
-    if covered.ndim != 1 or times.ndim != 1:
-        raise ValueError("values and times_s must be one-dimensional")
-    if len(covered) != len(times):
-        raise ValueError("values and times_s must have equal length")
-    if not len(covered):
+    values = np.asarray(values, dtype=bool)
+    if not len(values):
         return 0.0
-    if np.any(np.diff(times) < 0.0):
-        raise ValueError("times_s must be nondecreasing")
-
-    longest = 0.0
-    run_start: int | None = None
-    for index, is_covered in enumerate(covered):
-        if not is_covered and run_start is None:
-            run_start = index
-        elif is_covered and run_start is not None:
-            longest = max(longest, float(times[index] - times[run_start]))
-            run_start = None
-
-    if run_start is not None:
-        longest = max(longest, float(times[-1] - times[run_start]))
-
-    return longest
+    dt = float(np.median(np.diff(times_s))) if len(times_s) >= 2 else 0.0
+    longest = current = 0
+    for value in values:
+        if value:
+            longest = max(longest, current)
+            current = 0
+        else:
+            current += 1
+    return float(max(longest, current) * dt)
 
 
 def evaluate_satellite_snapshots_kdtree(

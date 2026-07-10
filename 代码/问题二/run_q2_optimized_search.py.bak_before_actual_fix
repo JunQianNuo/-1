@@ -163,31 +163,22 @@ def main() -> None:
         args.separation_duration_hours * 3600.0,
         args.separation_time_step,
     )
-    # The local active set must cover the same full horizon as the
-    # separation oracle. Otherwise most of the 24 h domain is absent from
-    # the continuous-parameter optimization.
     active_times = q2.make_time_grid(
-        args.separation_duration_hours * 3600.0,
+        args.screen_duration_hours * 3600.0,
         args.active_time_step,
     )
 
     all_screen_records: list[dict] = []
     all_refined_records: list[dict] = []
     structure_audit: list[dict] = []
-
-    # Numerical feasibility and continuous certification are different states.
-    first_numerical_solution: dict | None = None
     validated_solution: dict | None = None
     adaptive_certificate: dict | None = None
-    adaptive_certificates: list[dict] = []
 
     master_seed = np.random.SeedSequence(args.seed)
     total_seeds = master_seed.spawn(args.stop_total - args.start_total + 1)
 
     for total_offset, total in enumerate(range(args.start_total, args.stop_total + 1)):
         total_candidates: list[tuple[dict, q2.ConstellationParams, WalkerStructure]] = []
-        current_total_solution: dict | None = None
-        audit_start_index = len(structure_audit)
         structures = walker_structures(total)
         structure_seeds = total_seeds[total_offset].spawn(len(structures))
 
@@ -209,15 +200,8 @@ def main() -> None:
                     region=region,
                     q=args.q,
                     include_representatives=not args.no_representatives,
-                    # Ranking candidates requires the same complete time grid.
-                    stop_if_margin_below=None,
+                    stop_if_margin_below=-0.02,
                 )
-                if result.stopped_early or result.evaluated_time_steps != len(screen_times):
-                    raise RuntimeError(
-                        "Incomplete screening evaluation: expected "
-                        f"{len(screen_times)} time steps, got "
-                        f"{result.evaluated_time_steps}."
-                    )
                 record = result_record(result, stage="screen")
                 all_screen_records.append(record)
                 structure_records.append((record, params))
@@ -237,9 +221,7 @@ def main() -> None:
                     "sats_per_plane": structure.sats_per_plane,
                     "phase_factor": structure.phase_factor,
                     "screen_evaluations": len(structure_records),
-                    "local_starts_retained": len(selected),
-                    # Filled after the global per-total Top-K cut.
-                    "selected_for_refinement": 0,
+                    "selected_for_refinement": len(selected),
                 }
             )
 
@@ -248,24 +230,6 @@ def main() -> None:
             reverse=True,
         )
         total_candidates = total_candidates[: args.keep_top_per_total]
-
-        # Audit only starts that actually survive the global Top-K cut.
-        final_selection_counts: dict[tuple[int, int, int], int] = {}
-        for _record, _params, selected_structure in total_candidates:
-            key = (
-                selected_structure.planes,
-                selected_structure.sats_per_plane,
-                selected_structure.phase_factor,
-            )
-            final_selection_counts[key] = final_selection_counts.get(key, 0) + 1
-
-        for audit_row in structure_audit[audit_start_index:]:
-            key = (
-                int(audit_row["planes"]),
-                int(audit_row["sats_per_plane"]),
-                int(audit_row["phase_factor"]),
-            )
-            audit_row["selected_for_refinement"] = final_selection_counts.get(key, 0)
 
         for _screen_record, params, structure in total_candidates:
             active_set = initial_active_set(
@@ -301,25 +265,24 @@ def main() -> None:
                 and record["min_margin"] >= -args.margin_tolerance
             ):
                 if (
-                    current_total_solution is None
-                    or score_record(record, args.q)
-                    > score_record(current_total_solution, args.q)
+                    validated_solution is None
+                    or record["total_satellites"] < validated_solution["total_satellites"]
+                    or (
+                        record["total_satellites"] == validated_solution["total_satellites"]
+                        and score_record(record, args.q) > score_record(validated_solution, args.q)
+                    )
                 ):
-                    current_total_solution = record
+                    validated_solution = record
 
-        if current_total_solution is not None:
-            if first_numerical_solution is None:
-                first_numerical_solution = current_total_solution
-
-            accepted = True
+        if validated_solution is not None:
             if args.adaptive_verify:
                 certificate_params = q2.ConstellationParams(
-                    planes=int(current_total_solution["planes"]),
-                    sats_per_plane=int(current_total_solution["sats_per_plane"]),
-                    phase_factor=int(current_total_solution["phase_factor"]),
-                    inclination_deg=float(current_total_solution["inclination_deg"]),
-                    raan0_deg=float(current_total_solution["raan0_deg"]),
-                    u0_deg=float(current_total_solution["u0_deg"]),
+                    planes=int(validated_solution["planes"]),
+                    sats_per_plane=int(validated_solution["sats_per_plane"]),
+                    phase_factor=int(validated_solution["phase_factor"]),
+                    inclination_deg=float(validated_solution["inclination_deg"]),
+                    raan0_deg=float(validated_solution["raan0_deg"]),
+                    u0_deg=float(validated_solution["u0_deg"]),
                 )
                 certificate = certify_continuous_coverage(
                     certificate_params,
@@ -341,21 +304,8 @@ def main() -> None:
                     "failure_box": asdict(certificate.failure_box) if certificate.failure_box else None,
                     "unresolved_boxes": [asdict(box) for box in certificate.unresolved_boxes],
                 }
-                adaptive_certificates.append(
-                    {
-                        "total_satellites": total,
-                        "candidate": current_total_solution,
-                        "certificate": adaptive_certificate,
-                    }
-                )
-                accepted = certificate.status == "covered"
-
-            if accepted:
-                # Totals are processed in ascending order; first accepted is minimum.
-                if validated_solution is None:
-                    validated_solution = current_total_solution
-                if not args.continue_after_validated:
-                    break
+            if not args.continue_after_validated:
+                break
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     write_csv(all_screen_records, args.output_dir / "q2_optimized_screen.csv")
@@ -373,10 +323,8 @@ def main() -> None:
         "settings": settings,
         "screen_record_count": len(all_screen_records),
         "refined_record_count": len(all_refined_records),
-        "first_numerical_candidate": first_numerical_solution,
         "validated_numerical_candidate": validated_solution,
         "adaptive_certificate": adaptive_certificate,
-        "adaptive_certificates": adaptive_certificates,
     }
     (args.output_dir / "q2_optimized_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2),
@@ -386,10 +334,7 @@ def main() -> None:
     print("Problem 2 optimized search finished.")
     print(f"Screen evaluations: {len(all_screen_records)}")
     print(f"Refined candidates: {len(all_refined_records)}")
-    print(f"First numerical candidate: {first_numerical_solution}")
-    print(f"Accepted candidate: {validated_solution}")
-    if args.adaptive_verify and adaptive_certificate is not None:
-        print(f"Last adaptive certificate status: {adaptive_certificate['status']}")
+    print(f"Best numerical candidate: {validated_solution}")
     print(f"Outputs: {args.output_dir}")
 
 

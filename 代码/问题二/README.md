@@ -9,7 +9,11 @@
 | 文件/目录 | 说明 |
 |:--|:--|
 | `q2_constellation.py` | 覆盖几何、Walker-Delta 星座参数化、指标计算、候选枚举与单重覆盖搜索接口 |
+| `q2_fast_coverage.py` | 加速算法核心：邻近卫星对筛选、小圆交点、区域边界交点、弧段代表点、单时刻临界点、跨时间快速评价 |
+| `run_q2_fast_search.py` | 快速筛选搜索入口：临界点—代表点法筛候选，Top-K 候选再做网格复核 |
 | `test_q2_constellation.py` | 单元测试 |
+| `test_q2_fast_coverage.py` | 加速算法几何基础的单元测试 |
+| `test_q2_fast_search.py` | 快速搜索入口的单元测试 |
 | `run_q2_smoke.py` | 最小 smoke run，用于确认模型链路可运行 |
 | `run_q2_single_search.py` | 问题二单重覆盖正式粗搜索脚本 |
 | `run_q2_scan.py` | 多阶段扫描：粗搜 → 中网格验证 → 细网格复核 → 二重覆盖 |
@@ -21,7 +25,58 @@
 
 ```bash
 python test_q2_constellation.py
+python -m unittest test_q2_fast_coverage.py
+python -m unittest test_q2_fast_search.py
 ```
+
+当前加速算法仍处于模块化实现阶段；正式大规模搜索前，应同时通过上述两组测试。
+
+## 加速算法当前接口
+
+`q2_fast_coverage.py` 目前提供以下接口：
+
+| 接口 | 作用 |
+|:--|:--|
+| `neighbor_pairs_by_dot` | 分块筛选角距离不超过阈值的卫星对，避免保存三维覆盖张量 |
+| `small_circle_intersections` | 计算两个等半径覆盖边界小圆的交点 |
+| `small_circle_region_boundary_intersections` | 计算覆盖边界与目标经纬度矩形边界的交点 |
+| `coverage_arc_representative_points` | 在覆盖圆弧两侧取代表点，降低只看交点时漏掉开区域空洞的风险 |
+| `region_edge_representative_points` | 在目标区域边界相邻顶点之间取代表点 |
+| `critical_points_at_time` | 生成一个时刻的临界点/代表点集合：区域角点、边界交点、覆盖圆交点、弧段代表点 |
+| `coverage_counts_at_points` | 对临界点集合计算覆盖重数 |
+| `evaluate_satellite_snapshots_fast` | 对给定卫星时间序列进行快速覆盖评价 |
+| `evaluate_constellation_fast` | 接入 Walker 星座参数，生成卫星位置并快速评价 |
+
+## 快速筛选搜索
+
+推荐先使用 `run_q2_fast_search.py`，而不是直接放开旧枚举脚本：
+
+```bash
+python run_q2_fast_search.py
+```
+
+默认流程：
+
+1. 使用 `evaluate_constellation_fast` 对候选星座做临界点—代表点快速评价；
+2. 内存中只保留 Top-K 快速候选，避免旧脚本 `all_records` 累积；
+3. 对 Top-K 中前若干候选调用 `q2_constellation.py` 的网格法复核；
+4. 输出快速候选表、复核候选表和摘要 JSON。
+
+输出：
+
+| 输出 | 说明 |
+|:--|:--|
+| `results/q2_fast_search_top_fast_candidates.csv` | 快速法筛出的 Top-K 候选 |
+| `results/q2_fast_search_verified_candidates.csv` | 经网格法复核的候选 |
+| `results/q2_fast_search_summary.json` | 搜索设置、最优快速候选、最优复核候选 |
+
+小规模 smoke 示例：
+
+```bash
+python run_q2_fast_search.py --start-total 1 --stop-total 1 --inclinations 0 --phase-resolution 90 --max-candidates-per-total 4 --keep-top-fast 2 --verify-top 1 --duration-hours 0.001 --fast-time-step 10 --verify-time-step 10 --verify-grid-step 30 --output-dir results/fast_search_smoke
+```
+
+正式搜索时应逐步扩大：先增大 `--stop-total` 和 `--max-candidates-per-total`，再缩短 `--fast-time-step`，最后缩小 `--verify-grid-step` 和 `--verify-time-step`。最终可行性仍以复核表中的网格法指标为准。
 
 ## 最小链路验证
 
@@ -66,6 +121,8 @@ python run_q2_single_search.py --lat-step 2 --time-step 180 --duration-hours 23.
 扩大搜索时应分阶段进行：先降低空间步长，再降低时间步长，最后取消候选数上限；每一阶段都比较 `c_min`、`C1`、`max_gap_s` 是否稳定。
 
 ## 多阶段扫描
+
+> 注意：`run_q2_scan.py` 和 `run_q2_sweep.py` 属于旧枚举法实验脚本。若直接放开候选上限并扩大到大规模 $S$，时间开销会很高；正式搜索应优先使用后续的 `q2_fast_coverage.py` 临界点/候选压缩流程，再用 `q2_constellation.py` 做网格复核。
 
 ```bash
 python run_q2_scan.py

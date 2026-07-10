@@ -1,0 +1,54 @@
+[
+  {
+    "case": "M20_N50_L1",
+    "planes": 20,
+    "sats_per_plane": 50,
+    "S": 1000,
+    "time_steps": 1,
+    "elapsed_s": 0.33106140000745654,
+    "elapsed_per_time_s": 0.33106140000745654,
+    "critical_points_mean": 3176.0,
+    "critical_points_max": 3176,
+    "c_min": 0,
+    "single_coverage_time_rate": 0.0
+  },
+  {
+    "case": "M25_N40_L1",
+    "planes": 25,
+    "sats_per_plane": 40,
+    "S": 1000,
+    "time_steps": 1,
+    "elapsed_s": 0.3192101000167895,
+    "elapsed_per_time_s": 0.3192101000167895,
+    "critical_points_mean": 3513.0,
+    "critical_points_max": 3513,
+    "c_min": 0,
+    "single_coverage_time_rate": 0.0
+  },
+  {
+    "case": "M40_N25_L1",
+    "planes": 40,
+    "sats_per_plane": 25,
+    "S": 1000,
+    "time_steps": 1,
+    "elapsed_s": 0.30876590000116266,
+    "elapsed_per_time_s": 0.30876590000116266,
+    "critical_points_mean": 3414.0,
+    "critical_points_max": 3414,
+    "c_min": 0,
+    "single_coverage_time_rate": 0.0
+  },
+  {
+    "case": "M20_N50_L5",
+    "planes": 20,
+    "sats_per_plane": 50,
+    "S": 1000,
+    "time_steps": 5,
+    "elapsed_s": 1.4839524000126403,
+    "elapsed_per_time_s": 0.29679048000252806,
+    "critical_points_mean": 3296.4,
+    "critical_points_max": 3405,
+    "c_min": 0,
+    "single_coverage_time_rate": 0.0
+  }
+]

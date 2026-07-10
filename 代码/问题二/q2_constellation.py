@@ -266,18 +266,30 @@ def coverage_counts(
 ) -> np.ndarray:
     """Compute coverage multiplicity for each ground point and time.
 
-    Returns an integer array with shape (K, L).
+    Returns an integer array with shape (K, L).  Batched over time steps
+    to avoid allocating a (S, K, L) intermediate for large constellations.
     """
 
     cfg = config or CoverageConfig()
     ground = ground_unit_vectors(lat_deg, lon_deg)
-    sat = satellite_unit_vectors(params, times_s, cfg)
-
-    # dots shape: (S, K, L)
-    dots = np.einsum("sld,kd->skl", sat, ground)
     cos_theta = math.cos(cfg.coverage_angle_rad)
-    covered = dots >= cos_theta
-    return covered.sum(axis=0).astype(np.int16)
+    sat_all = satellite_unit_vectors(params, times_s, cfg)
+
+    S, L, _3 = sat_all.shape
+    K = ground.shape[0]
+    counts = np.zeros((K, L), dtype=np.int16)
+
+    # Batch over time to keep memory bounded
+    batch_size = max(1, min(L, 10))
+    for start in range(0, L, batch_size):
+        end = min(start + batch_size, L)
+        sat_batch = sat_all[:, start:end, :]  # (S, B, 3)
+        # dots: (S, B, K) — dot each satellite/time with every ground point
+        dots_batch = np.einsum("sbD,kD->sbk", sat_batch, ground)
+        covered = dots_batch >= cos_theta
+        counts[:, start:end] = covered.sum(axis=0).T.astype(np.int16)
+
+    return counts
 
 
 def longest_uncovered_gap_s(covered: np.ndarray, dt_s: float) -> float:

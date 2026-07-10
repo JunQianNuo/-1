@@ -217,6 +217,87 @@ def setcover_ilp(A: sp.csr_matrix, q: int = 1, *, time_limit_s: float = 60.0):
     return int(round(res.fun)), sel, res.message
 
 
+def rgt_altitude_km(revs_per_sidereal_day: int, config: q2.CoverageConfig | None = None) -> float:
+    """Altitude of the repeat-ground-track orbit with N_P revs per sidereal day."""
+    cfg = config or q2.CoverageConfig()
+    T_orb = q2.SIDEREAL_DAY_S / revs_per_sidereal_day
+    a = (cfg.mu_km3_s2 * (T_orb / (2.0 * math.pi)) ** 2) ** (1.0 / 3.0)
+    return a - cfg.earth_radius_km
+
+
+def cgt_candidate_subpoints(
+    inclination_deg: float,
+    altitude_km: float,
+    n_slots: int,
+    config: q2.CoverageConfig | None = None,
+) -> np.ndarray:
+    """Common-ground-track candidate pool: L time-shifted copies of one seed.
+
+    On a repeat-ground-track orbit the ground track repeats exactly over one
+    sidereal day (= ``n_slots`` slots).  A CGT satellite at temporal offset ``s``
+    has, in ECEF, the subpoint the seed reaches ``s`` slots later.  Hence the
+    candidate pool is the set of circular shifts of the seed's ECEF trajectory,
+    giving a *circulant* coverage structure and a tiny (L-variable) ILP.
+    """
+    cfg = config or q2.CoverageConfig()
+    base = q2.CoverageConfig(
+        earth_radius_km=cfg.earth_radius_km, altitude_km=altitude_km,
+        mu_km3_s2=cfg.mu_km3_s2, earth_rotation_rad_s=cfg.earth_rotation_rad_s,
+        ground_coverage_radius_km=cfg.ground_coverage_radius_km,
+    )
+    times = q2.make_time_grid(q2.SIDEREAL_DAY_S, q2.SIDEREAL_DAY_S / n_slots)[:n_slots]
+    seed = q2.ConstellationParams(planes=1, sats_per_plane=1, phase_factor=0,
+                                  inclination_deg=inclination_deg, raan0_deg=0.0, u0_deg=0.0)
+    seed_sub = q2.satellite_unit_vectors(seed, times, base)[0]     # (L, 3)
+    L = seed_sub.shape[0]
+    # candidate s at slot tau = seed at (tau + s) mod L
+    cand = np.empty((L, L, 3), dtype=float)
+    for s in range(L):
+        cand[s] = np.roll(seed_sub, -s, axis=0)
+    return cand
+
+
+def solve_q2_cgt_bilp(
+    *,
+    inclination_deg: float = 50.0,
+    revs_per_sidereal_day: int = 15,
+    n_slots: int = 288,
+    grid_step_deg: float = 4.0,
+    q: int = 1,
+    config: q2.CoverageConfig | None = None,
+    milp_time_limit_s: float = 120.0,
+) -> dict:
+    """CGT + BILP: min ground-track satellites for continuous q-coverage (exact ILP)."""
+    cfg = config or q2.CoverageConfig()
+    h_rgt = rgt_altitude_km(revs_per_sidereal_day, cfg)
+    cand = cgt_candidate_subpoints(inclination_deg, h_rgt, n_slots, cfg)
+    lat, lon = q2.make_latlon_grid(step_deg=grid_step_deg)
+    ground = q2.ground_unit_vectors(lat, lon)
+    A, _w = build_coverage_matrix(cand, ground, cfg.coverage_angle_rad)
+    # Feasibility precheck: a region point the single ground track NEVER covers
+    # makes the BILP infeasible (a wide region has permanent inter-pass gaps).
+    row_cover = np.asarray(A.sum(axis=1)).ravel()
+    n_uncoverable = int((row_cover == 0).sum())
+    if n_uncoverable > 0:
+        return {
+            "rgt_altitude_km": h_rgt, "n_slots": n_slots, "num_demands": int(A.shape[0]),
+            "feasible": False, "uncoverable_demands": n_uncoverable,
+            "reason": "single ground track leaves region points never covered "
+                      "(inter-pass longitude gaps); CGT suits localized targets, "
+                      "not wide 2-D regions",
+            "lp_lower_bound": None, "greedy": None, "ilp_optimum": None,
+            "ilp_status": "infeasible", "ilp_selection": None,
+        }
+    lp = setcover_lp_lower_bound(A, q=q)
+    greedy = greedy_setcover(A, q=q)
+    opt, sel, status = setcover_ilp(A, q=q, time_limit_s=milp_time_limit_s)
+    return {
+        "rgt_altitude_km": h_rgt, "n_slots": n_slots, "num_demands": int(A.shape[0]),
+        "feasible": True, "lp_lower_bound": lp, "greedy": int(greedy.size),
+        "ilp_optimum": opt, "ilp_status": status, "ilp_selection": sel,
+    }
+
+
 def solve_q2_setcover(
     *,
     inclination_deg: float = 50.0,

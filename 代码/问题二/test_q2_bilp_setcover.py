@@ -87,5 +87,21 @@ class TestCandidatePool(unittest.TestCase):
         self.assertLessEqual(A.shape[0], len(lat) * len(times))
 
 
+class TestCGT(unittest.TestCase):
+    def test_rgt_altitude(self) -> None:
+        cfg = q2.CoverageConfig()
+        h = bilp.rgt_altitude_km(15, cfg)
+        self.assertGreater(h, 500.0)
+        self.assertLess(h, 620.0)   # ~561 km for 15 revs/sidereal day
+
+    def test_single_track_infeasible_for_wide_region(self) -> None:
+        # A single ground track cannot continuously cover the whole China box
+        # (permanent inter-pass longitude gaps) -> BILP reports infeasible.
+        r = bilp.solve_q2_cgt_bilp(inclination_deg=50.0, revs_per_sidereal_day=15,
+                                   n_slots=96, grid_step_deg=6.0, q=1)
+        self.assertFalse(r["feasible"])
+        self.assertGreater(r["uncoverable_demands"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

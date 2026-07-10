@@ -1,0 +1,27 @@
+问题四参数化 smoke run（非最终数值结论）
+================================================
+本输出仅验证算法链路；最终数值需等待问题二最终构型、覆盖矩阵和问题三容量口径。
+
+[scenario]
+smoke_parameterized_non_final
+
+[single_satellite]
+catalog_density_km3: 5.623413251903491e-11
+uncatalog_density_km3: 9.943765867480965e-09
+uncatalog_collision_rate_per_s: 3.4441286132620383e-13
+uncatalog_collision_probability_per_year: 1.0861345009938184e-05
+catalog_conjunction_events_per_year: 1.3928247912604357
+
+[constellation]
+satellite_count: 1000
+total_avoidances_per_year: 85.97683896669356
+capacity_loss_ratio: 8.178923037166435e-07
+avoidance_cost_wanyuan_per_year: 171.95367793338713
+expected_failures_per_year: 0.011083951165051849
+replacement_cost_wanyuan_per_year: 9.23662597087654
+
+[redundancy]
+unit_reliability_life: 0.999944581779821
+ground_confidence_10_spares: 1.0
+space_confidence_20_spares_20_planes: 0.9999233607539337
+synthetic_coverage_availability: 0.75

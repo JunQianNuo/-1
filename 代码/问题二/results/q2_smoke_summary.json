@@ -1,0 +1,28 @@
+{
+  "note": "Smoke run only; not final optimization result.",
+  "grid_points": 42,
+  "time_steps": 13,
+  "coverage_angle_deg": 4.550567325948776,
+  "orbital_period_min": 95.50211815557677,
+  "best_candidate": {
+    "params": {
+      "planes": 1,
+      "sats_per_plane": 40,
+      "phase_factor": 0,
+      "inclination_deg": 49.0,
+      "raan0_deg": 0.0,
+      "u0_deg": 4.5,
+      "total_satellites": 40
+    },
+    "metrics": {
+      "coverage_rate_q1": 0.14597209091179494,
+      "coverage_rate_q2": 0.0,
+      "avg_multiplicity": 0.14597209091179494,
+      "c_min": 0,
+      "max_gap_s": 7800.0,
+      "strict_double_time_rate": 0.0
+    },
+    "num_grid_points": 42,
+    "num_time_steps": 13
+  }
+}

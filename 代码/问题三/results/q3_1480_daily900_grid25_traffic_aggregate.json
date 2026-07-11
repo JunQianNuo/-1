@@ -1,0 +1,15 @@
+{
+  "scenario": "q3_1480_daily900_grid25",
+  "avg_total_flow_gbps": 1.0,
+  "peak_total_flow_gbps": 1.5,
+  "access_capacity_gbps_per_satellite": 20.0,
+  "served_ratio_min": 0.8333333333333327,
+  "served_ratio_mean": 0.9982817869415801,
+  "max_access_load_gbps_peak_over_time": 0.24999999999999986,
+  "max_access_utilization_peak_vs_20gbps_over_time": 0.012499999999999994,
+  "max_relay_load_gbps_peak_over_time": 0.38636363636363613,
+  "max_isl_load_gbps_peak_over_time": 0.2954545454545453,
+  "active_access_satellites_mean": 26.38144329896907,
+  "active_relay_satellites_mean": 108.27835051546391,
+  "active_isl_links_mean": 155.1443298969072
+}

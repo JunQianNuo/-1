@@ -1,0 +1,5 @@
+Problem 3 algorithm smoke run
+This is an implementation verification run, not a final numerical conclusion.
+params=planes=37, sats_per_plane=40, phase_factor=31, inclination_deg=50.0, raan0_deg=0.0, u0_deg=0.0
+satellites=1480, time_steps=97, ground_points=12, physical_coverage=True, topology_method=nearest
+outputs=D:\知识库\数学建模\第一次\代码\问题三\results

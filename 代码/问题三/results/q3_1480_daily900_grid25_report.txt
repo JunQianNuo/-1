@@ -1,0 +1,39 @@
+Problem 3 run report: 1480-satellite Q2 double-coverage input
+
+scenario: q3_1480_double_coverage_input_daily_900s_grid25
+planes: 37
+sats_per_plane: 40
+phase_factor: 31
+inclination_deg: 50.0
+raan0_deg: 0.0
+u0_deg: 0.0
+satellites: 1480
+topology_method: nearest
+physical_coverage: True
+duration_s: 86164.09
+step_s: 900.0
+time_steps: 97
+ground_points: 12
+od_time_samples: 12804
+reachable_count: 12782
+unreachable_count: 22
+unreachable_rate: 0.001718213058419244
+mean_delay_ms: 26.406924375323598
+max_delay_ms: 89.83088920244239
+p50_delay_ms: 25.446824169901397
+p90_delay_ms: 39.0881506045747
+p95_delay_ms: 45.74481780858773
+p99_delay_ms: 53.65561237274178
+within_30ms_rate_all_samples: 0.669009684473602
+within_30ms_rate_reachable: 0.6701611641370677
+mean_access_min_over_time: 1.6494845360824741
+empty_ground_points_max_over_time: 1
+mean_access_mean_over_time: 2.3144329896907214
+topology_component_count_max: 1
+topology_min_degree_min: 4
+topology_max_degree_max: 4
+edge_count_min: 2960
+edge_count_max: 2960
+max_link_distance_km_max: 1086.0308030649371
+
+Interpretation note: computed on 25-degree regional grid and 900s temporal sampling over one sidereal day; use as reproducible Q3 sample, not final dense-grid convergence conclusion.

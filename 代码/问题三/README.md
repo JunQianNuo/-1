@@ -85,6 +85,36 @@ python run_q3_joint_search.py --mode certify --resume results/q3_joint/joint_che
 
 发现阶段没有找到可行解时只报告 `inconclusive`；只有核验阶段的较小星数层全部候选被严格否决，才能报告规定离散范围内不可行。
 
+## 首次完整搜索实际结果（整恒星日 discover）
+
+已用问题二双重覆盖可行缓存执行一次真实规模联合反推，结果落盘 `results/q3_joint/`（`joint_summary.json`、`joint_report.md`、`joint_candidate_records.csv`、`joint_stage_timing.csv`、`joint_layer_summary.csv`、`joint_checkpoint.jsonl`）。
+
+命令：
+
+```bash
+python run_q3_joint_search.py --mode discover \
+  --q2-cache ../问题二/results/q2_free_search/fine_records.csv \
+  --s-lb 1480 --s-max 1800 --workers 10 \
+  --duration-s 86164.09 \
+  --high-time-step-s 150 --coverage-high-step-deg 1 --communication-high-step-deg 5 \
+  --out results/q3_joint
+```
+
+| 项目 | 值 |
+|:--|:--|
+| 实际耗时 | 665.9 s（≈11 min，`workers=10`，28 核） |
+| 高保真母网格 | 576 时刻 × 3150 覆盖点 × 154 通信点（23 562 OD 对/时刻） |
+| 输入候选 | 257 个 Q2 可行构型（S∈[1480,1800]，C1≥0.999，C2≥0.95） |
+| 阶段晋级 | 低保真 257 → 中保真 100 → 高保真 **0**（全部被中保真严格上界淘汰） |
+| 通信满足率 | P30_reach ∈ [0.745, 0.839]（需 ≥0.999）；P30_all ∈ [0.743, 0.839]（需 ≥0.95） |
+| 超时比例 | 约 20% 可达 OD 对超 30 ms；最大端到端时延 69–100 ms |
+| 最优（仍被拒）构型 | S=1540 (M=35, N=44, F=24, i=50.25°)，P30_reach=0.839 |
+| claim | `inconclusive`（discover 不证明不可行，只证明缓存内 Q2 最优构型全部不达标） |
+
+**结论**：题面 4 邻接最近邻 ISL 规则下，问题二覆盖最优构型无法满足严格 30 ms——瓶颈是跨区长距 OD 时延（目标区域经度跨约 6000 km，最近邻 ISL 路径角对角绕行）。差距是数量级的，非网格细化可弥补。
+
+**加速确认**：多保真阶梯 + 母网格严格上界使高保真通信评价对全部候选一次都未触发，11 分钟完成整日判定，验证了共享快照 + 批量最短路 + 减少高保真候选数的降本设计（详见 [[22-问题三求解算法设计]] §14、[[20-问题三分析审查]]）。
+
 ## 运行 smoke test
 
 ```bash

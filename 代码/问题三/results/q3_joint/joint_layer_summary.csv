@@ -1,0 +1,7 @@
+mode,S,status,candidate_count,verified,rejected,numerical_error
+discover,1440,inconclusive,14,0,1,0
+discover,1480,inconclusive,32,0,28,0
+discover,1500,inconclusive,36,0,0,0
+discover,1520,inconclusive,52,0,31,0
+discover,1540,inconclusive,56,0,32,0
+discover,1560,inconclusive,67,0,8,0

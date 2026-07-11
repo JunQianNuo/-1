@@ -1,0 +1,25 @@
+{
+  "best_candidate": null,
+  "candidate_stage_records": 357,
+  "claim": "inconclusive",
+  "config_digest": "c9289edbdd272b1c940d0071692d1b2abb742ab0d8369d5a421677379d1044d6",
+  "elapsed_s": 665.9425496000003,
+  "layer_status": "inconclusive",
+  "mode": "discover",
+  "sample_counts": {
+    "communication_points": 154,
+    "coverage_points": 3150,
+    "n_max": 0,
+    "reachable_count": 0,
+    "times": 576
+  },
+  "schema_version": "q3-joint-v1",
+  "search_claim": "inconclusive",
+  "thresholds": {
+    "c1_min": 0.999,
+    "c2_min": 0.95,
+    "delay_limit_s": 0.03,
+    "eta_all": 0.95,
+    "eta_reach": 0.999
+  }
+}

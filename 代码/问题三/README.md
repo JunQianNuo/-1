@@ -53,9 +53,10 @@ python -m pytest tests -q
 - 面积加权覆盖上界工具 `WeightedCoverageProgress`；
 - 代表时刻连通性筛查；
 - OD 时延乐观下界筛查；
-- 可达样本 $P_{30}^{\mathrm{reach}}\ge0.999$ 与全样本 $P_{30}^{\mathrm{all}}\ge0.95$ 双比例提前终止；
-- 等权样本超时预算 $n_{\max}=\lfloor0.001R\rfloor$；
+- $P_{30}^{\mathrm{reach}}$ 与 $P_{30}^{\mathrm{all}}$ 为诊断指标（只排序，不淘汰）；
+- 覆盖 $\mathcal C_1\ge0.999$ 且 $\mathcal C_2\ge0.95$ 为唯一淘汰条件；
 - `active/deferred/rejected/verified/numerical_error` 候选状态机；
+- 按 $P_{30}^{\mathrm{all}}$ 主排序，$P_{30}^{\mathrm{reach}}$ / 最大时延为 tie-break。
 - 当前星数层全部候选复核后，按鲁棒裕量选择候选。
 
 覆盖模型由问题二代码提供，因此联合搜索主函数 `search_constellations(...)` 接收外部 `coverage_evaluator` 回调。
@@ -84,6 +85,19 @@ python run_q3_joint_search.py --mode certify --resume results/q3_joint/joint_che
 - `joint_report.md`
 
 发现阶段没有找到可行解时只报告 `inconclusive`；只有核验阶段的较小星数层全部候选被严格否决，才能报告规定离散范围内不可行。
+
+## 饱和停止搜索（覆盖为唯一淘汰、$P_{30}^{\mathrm{all}}$ 边际衰减判停）
+
+覆盖 $\mathcal C_1\ge0.999$ 且 $\mathcal C_2\ge0.95$ 为唯一淘汰条件。按星数递增逐层跑低→中→高，取每层覆盖最优候选的 $P_{30}^{\mathrm{all}}$，若某 $S_i$ 在其后 200 星窗口内 $P_{30}^{\mathrm{all}}$ 最大增量 $\le1\%$ 且每百星增量 $\le0.5\%$，则认为已达饱和，$S_i$ 为最小推荐星数。
+
+```bash
+python run_q3_joint_search.py --mode saturation \
+  --s-lb 1440 --s-max 2000 --s-step 20 \
+  --forward-window-s 200 --max-window-gain 0.01 --max-gain-per-100 0.005 \
+  --workers 4 --out results/q3_saturation
+```
+
+输出额外包含 `joint_saturation_curve.csv`（$S$—$P_{30}^{\mathrm{all}}$ 曲线数据）、饱和决策与窗口增益。
 
 ## 首次完整搜索实际结果（整恒星日 discover）
 

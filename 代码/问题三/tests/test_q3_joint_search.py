@@ -652,8 +652,6 @@ def test_joint_evaluation_propagates_once_per_selected_time(monkeypatch):
         config=Q3Config(coverage_angle_rad=math.pi),
         c1_min=0.0,
         c2_min=0.0,
-        eta_reach=0.0,
-        eta_all=0.0,
     )
     assert result.status == "verified"
     assert calls == [0.0, 10.0]
@@ -676,8 +674,6 @@ def test_repeated_fidelity_does_no_new_work_or_propagation(monkeypatch):
         config=Q3Config(coverage_angle_rad=math.pi),
         c1_min=0.0,
         c2_min=0.0,
-        eta_reach=0.0,
-        eta_all=0.0,
     )
     first, state = q3_joint_evaluator.evaluate_joint_candidate(**kwargs)
     weights = (state.coverage_progress.processed_weight, state.service_progress.processed_weight)
@@ -697,8 +693,6 @@ def test_low_fidelity_empirical_failure_remains_active(monkeypatch):
         config=Q3Config(coverage_angle_rad=0.0),
         c1_min=0.5,
         c2_min=0.5,
-        eta_reach=0.0,
-        eta_all=0.0,
     )
     assert result.status == "active"
     assert result.c1 == 0.0
@@ -739,6 +733,30 @@ def test_tiny_connected_candidate_processes_all_samples_consistently(monkeypatch
     assert len(state.processed_od_keys) == 2
 
 
+def test_complete_coverage_feasible_candidate_is_verified_even_with_low_p30(monkeypatch):
+    sat = np.array([[7000.0, 0.0, 0.0], [7000.0, 0.0, 0.0]])
+    monkeypatch.setattr(q3_joint_evaluator, "satellite_positions", lambda *a: (sat, sat))
+    monkeypatch.setattr(q3_joint_evaluator, "build_isl_graph", lambda *a, **k: WeightedGraph(1))
+    monkeypatch.setattr(
+        q3_joint_evaluator,
+        "batched_ground_delay_matrix",
+        lambda *a, **k: np.array([[0.0, 0.1], [0.02, 0.0]]),
+    )
+    result, _ = q3_joint_evaluator.evaluate_joint_candidate(
+        ConstellationParams(1, 1, 0, 0.0),
+        mother_grid=_joint_grid(),
+        fidelity=_fidelity(),
+        config=Q3Config(coverage_angle_rad=math.pi, delay_limit_s=0.03),
+    )
+    assert result.status == "verified"
+    assert result.message == "coverage_pass"
+    assert (result.c1, result.c2) == (1.0, 1.0)
+    assert result.p30_all < 1.0
+    assert result.p30_all == pytest.approx(0.5)
+    assert result.late_reachable_count == 1
+    assert result.max_delay_s == pytest.approx(0.1)
+
+
 def test_state_rejects_same_total_mother_grid_with_swapped_weights(monkeypatch):
     sat = np.array([[7000.0, 0.0, 0.0]])
     monkeypatch.setattr(q3_joint_evaluator, "satellite_positions", lambda *a: (sat, sat))
@@ -756,8 +774,6 @@ def test_state_rejects_same_total_mother_grid_with_swapped_weights(monkeypatch):
         config=Q3Config(coverage_angle_rad=math.pi),
         c1_min=0.0,
         c2_min=0.0,
-        eta_reach=0.0,
-        eta_all=0.0,
     )
     swapped = q3_joint_evaluator.MotherGrid(
         original.times_s,
@@ -774,8 +790,6 @@ def test_state_rejects_same_total_mother_grid_with_swapped_weights(monkeypatch):
             config=Q3Config(coverage_angle_rad=math.pi),
             c1_min=0.0,
             c2_min=0.0,
-            eta_reach=0.0,
-            eta_all=0.0,
         )
 
 
@@ -805,28 +819,6 @@ def test_joint_grid_validation_additional_invalid_inputs(mother, fidelity, error
         )
 
 
-def test_delay_lower_bound_all_upper_returns_before_graph_and_routing(monkeypatch):
-    sat = np.array([[7000.0, 0.0, 0.0]])
-    monkeypatch.setattr(q3_joint_evaluator, "satellite_positions", lambda *a: (sat, sat))
-    monkeypatch.setattr(q3_joint_evaluator, "build_isl_graph", lambda *a, **k: pytest.fail("graph built"))
-    monkeypatch.setattr(q3_joint_evaluator, "batched_ground_delay_matrix", lambda *a, **k: pytest.fail("routing called"))
-    result, _ = q3_joint_evaluator.evaluate_joint_candidate(
-        ConstellationParams(1, 1, 0, 0.0),
-        mother_grid=_joint_grid(
-            times=(0.0, 1.0),
-            communication_points=np.array([[-6371.0, 0.0, 0.0], [-6371.0, 0.0, 0.0]]),
-        ),
-        fidelity=_fidelity(times=(0,)),
-        config=Q3Config(coverage_angle_rad=0.0),
-        c1_min=0.0,
-        c2_min=0.0,
-        eta_reach=1.0,
-        eta_all=0.75,
-    )
-    assert result.status == "rejected"
-    assert result.message == "delay_lower_bound_all_upper"
-
-
 def test_lower_bound_misses_do_not_make_reachable_ratio_impossible(monkeypatch):
     sat = np.array([[7000.0, 0.0, 0.0]])
     monkeypatch.setattr(q3_joint_evaluator, "satellite_positions", lambda *a: (sat, sat))
@@ -842,18 +834,15 @@ def test_lower_bound_misses_do_not_make_reachable_ratio_impossible(monkeypatch):
         config=Q3Config(coverage_angle_rad=0.0),
         c1_min=0.0,
         c2_min=0.0,
-        eta_reach=1.0,
-        eta_all=0.5,
     )
     assert result.status == "active"
     assert result.p30_reachable == 1.0
     assert result.p30_all == 0.0
 
 
-def test_communication_upper_bound_rejects_after_actual_routes(monkeypatch):
+def test_late_routes_are_reported_as_diagnostics_not_rejected(monkeypatch):
     sat = np.array([[7000.0, 0.0, 0.0]])
     monkeypatch.setattr(q3_joint_evaluator, "satellite_positions", lambda *a: (sat, sat))
-    monkeypatch.setattr(q3_joint_evaluator, "optimistic_delay_lower_bounds", lambda **k: {(0, 1): 0.0, (1, 0): 0.0})
     monkeypatch.setattr(q3_joint_evaluator, "build_isl_graph", lambda *a, **k: WeightedGraph(1))
     monkeypatch.setattr(q3_joint_evaluator, "batched_ground_delay_matrix", lambda *a, **k: np.array([[0.0, 0.1], [0.1, 0.0]]))
     result, _ = q3_joint_evaluator.evaluate_joint_candidate(
@@ -864,5 +853,124 @@ def test_communication_upper_bound_rejects_after_actual_routes(monkeypatch):
         c1_min=0.0,
         c2_min=0.0,
     )
-    assert result.status == "rejected"
-    assert result.message == "communication_upper_bound"
+    assert result.status == "verified"
+    assert result.message == "coverage_pass"
+    assert result.p30_all == 0.0
+    assert result.p30_reachable == 0.0
+    assert result.late_reachable_count == 2
+    assert result.max_delay_s == pytest.approx(0.1)
+
+
+# --- Task 1: pure saturation-decision module ---
+from q3_saturation import SaturationObservation, first_saturation_decision
+
+
+def test_first_saturation_accepts_exact_one_percentage_point_gain():
+    data = [
+        SaturationObservation(1700, 0.86, "a", 0.90, 1.0, 0.97, 0.04),
+        SaturationObservation(1800, 0.865, "b", 0.90, 1.0, 0.97, 0.04),
+        SaturationObservation(1900, 0.87, "c", 0.90, 1.0, 0.97, 0.04),
+    ]
+    result = first_saturation_decision(data)
+    assert result.status == "saturated"
+    assert result.selected.stars == 1700
+    assert result.window_gain == pytest.approx(0.01)
+
+
+def test_first_saturation_requires_a_complete_200_satellite_horizon():
+    data = [SaturationObservation(1700, 0.86, "a", 0.9, 1.0, 0.97, 0.04)]
+    result = first_saturation_decision(data)
+    assert result.status == "insufficient_horizon"
+    assert result.selected is None
+
+
+def test_first_saturation_skips_an_early_window_with_excess_gain():
+    data = [
+        SaturationObservation(1700, .86, "a", .9, 1., .97, .04),
+        SaturationObservation(1900, .88, "b", .9, 1., .97, .04),
+        SaturationObservation(1920, .88, "c", .9, 1., .97, .04),
+        SaturationObservation(2120, .885, "d", .9, 1., .97, .04),
+    ]
+    assert first_saturation_decision(data).selected.stars == 1900
+
+
+def test_first_saturation_reports_not_saturated_when_all_windows_fail():
+    data = [
+        SaturationObservation(1700, .80, "a", .9, 1., .97, .04),
+        SaturationObservation(1900, .90, "b", .9, 1., .97, .04),
+    ]
+    result = first_saturation_decision(data)
+    assert result.status == "not_saturated"
+    assert result.selected is None
+
+
+def test_first_saturation_rejects_non_increasing_stars():
+    data = [
+        SaturationObservation(1700, .86, "a", .9, 1., .97, .04),
+        SaturationObservation(1700, .87, "b", .9, 1., .97, .04),
+    ]
+    with pytest.raises(ValueError):
+        first_saturation_decision(data)
+
+
+def test_first_saturation_rejects_non_finite_fields():
+    data = [
+        SaturationObservation(1700, float("nan"), "a", .9, 1., .97, .04),
+        SaturationObservation(1900, .87, "b", .9, 1., .97, .04),
+    ]
+    with pytest.raises(ValueError):
+        first_saturation_decision(data)
+
+
+# --- Task 3: saturation search mode, outputs, and reports ---
+from q3_saturation import SaturationDecision
+
+
+def test_parse_saturation_defaults():
+    args = run_q3_joint_search.parse_args(["--mode", "saturation"])
+    assert (args.s_step, args.forward_window_s) == (20, 200)
+    assert args.max_window_gain == pytest.approx(.01)
+    assert args.max_gain_per_100 == pytest.approx(.005)
+
+
+def test_saturation_main_writes_curve_and_selects_first_stable_layer(tmp_path, monkeypatch):
+    key = run_q3_joint_search.candidate_key(
+        ConstellationParams(40, 43, 0, 50.0, u0_deg=0.0)
+    )
+    selected = SaturationObservation(1700, 0.86, key, 0.90, 1.0, 0.97, 0.04)
+    observations = [
+        selected,
+        SaturationObservation(1800, 0.865, key, 0.90, 1.0, 0.97, 0.04),
+        SaturationObservation(1900, 0.87, key, 0.90, 1.0, 0.97, 0.04),
+    ]
+    decision = SaturationDecision(
+        status="saturated",
+        selected=selected,
+        window_end_stars=1900,
+        window_max_p30_all=0.87,
+        window_gain=0.01,
+        gain_per_100_stars=0.005,
+    )
+
+    def fake_run(*args, **kwargs):
+        return decision, observations
+
+    monkeypatch.setattr(run_q3_joint_search, "_run_saturation", fake_run)
+
+    out = tmp_path / "sat"
+    code = run_q3_joint_search.main([
+        "--mode", "saturation", "--s-lb", "1440", "--s-max", "1800",
+        "--workers", "1", "--out", str(out),
+        "--duration-s", "0", "--high-time-step-s", "900",
+        "--coverage-high-step-deg", "4", "--communication-high-step-deg", "25",
+    ])
+    summary = json.loads((out / "joint_summary.json").read_text(encoding="utf-8"))
+    assert code == 0
+    assert summary["claim"] == "saturated_minimum"
+    assert summary["objective"] == "p30_all_saturation"
+    assert summary["best_candidate"]["S"] == 1700
+    assert "n_max" not in summary["sample_counts"]
+    curve = out / "joint_saturation_curve.csv"
+    assert curve.exists()
+    rows = list(csv.DictReader(curve.open(encoding="utf-8")))
+    assert [int(row["S"]) for row in rows] == [1700, 1800, 1900]

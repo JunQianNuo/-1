@@ -52,5 +52,29 @@
       "note": "300s winner S=1440 (90x16) drops to C1=0.99889<0.999 at 150s; 1480 is the first S meeting BOTH at 150s"
     },
     "delta_S": 160
+  },
+  "refined_integer_scan_1deg_150s": {
+    "method": "integer steps of 2 around frontiers, 450s coarse -> 1deg/150s fine",
+    "S1_single_min": 1302,
+    "S1_config": {
+      "M": 62,
+      "N": 21,
+      "F": 30,
+      "i": 51.5,
+      "u0": 11.4,
+      "C1": 0.99929
+    },
+    "S2_double_min": 1480,
+    "S2_config": {
+      "M": 37,
+      "N": 40,
+      "F": 31,
+      "i": 50.0,
+      "u0": 0.0,
+      "C1": 0.99979,
+      "C2": 0.9694
+    },
+    "S2_note": "1482 (38x39,F=37) feasible at 450s, fails at 1deg/150s (C1=0.99854<0.999). 1480 is the true 150s minimum.",
+    "delta_S": 178
   }
 }

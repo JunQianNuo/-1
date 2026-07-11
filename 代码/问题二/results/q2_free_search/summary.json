@@ -1,5 +1,5 @@
 {
-  "note": "N-free multi-fidelity search; Omega0=0 (R02 proven). eps0=1e-3, C2>=0.95.",
+  "note": "N-free multi-fidelity. IMPORTANT: S1_single/S2_double below are the coarse-fine (4deg/900s -> 2deg/300s) frontier winners. They must be re-verified at 1deg/150s (see verified_1deg_150s), where 300s-optimistic candidates can fail. Omega0=0 (R02). eps0=1e-3, C2>=0.95.",
   "n_eval": 12044,
   "elapsed_s": 8753.0,
   "S1_single": 1320,
@@ -30,5 +30,27 @@
     "max_gap_s": 300.0,
     "avg_mult": 2.8762
   },
-  "delta_S": 120
+  "delta_S": 120,
+  "verified_1deg_150s": {
+    "S1_single": {
+      "S": 1320,
+      "M": 55,
+      "N": 24,
+      "F": 18,
+      "i": 51.25,
+      "C1": 0.99964,
+      "note": "holds at 150s"
+    },
+    "S2_double": {
+      "S": 1480,
+      "M": 37,
+      "N": 40,
+      "F": 31,
+      "i": 50.0,
+      "C1": 0.99979,
+      "C2": 0.9694,
+      "note": "300s winner S=1440 (90x16) drops to C1=0.99889<0.999 at 150s; 1480 is the first S meeting BOTH at 150s"
+    },
+    "delta_S": 160
+  }
 }

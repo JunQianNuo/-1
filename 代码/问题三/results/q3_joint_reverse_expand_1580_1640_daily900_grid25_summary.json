@@ -1,0 +1,42 @@
+{
+  "input": {
+    "q2_csv": "??/???/results/q2_free_search_accel_extend_1580_1640/fine_records.csv",
+    "coverage_filter": "C1>=0.999, C2>=0.95",
+    "deduplicated_candidates": 244,
+    "S_values": [
+      1580,
+      1600,
+      1620,
+      1640
+    ],
+    "q3_sampling": {
+      "duration_s": 86164.09,
+      "step_s": 900.0,
+      "grid_step_deg": 25.0,
+      "ground_points": 12,
+      "od_pairs": 132
+    },
+    "topology_method": "nearest",
+    "physical_coverage": true
+  },
+  "strict_Tmax30": {
+    "searched_layers": [
+      1580,
+      1600,
+      1620,
+      1640
+    ],
+    "found": null
+  },
+  "P30_ge_0.95": {
+    "searched_layers": [
+      1580,
+      1600,
+      1620,
+      1640
+    ],
+    "eta": 0.95,
+    "found": null
+  },
+  "elapsed_s": 448.3566382000008
+}

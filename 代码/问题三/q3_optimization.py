@@ -5,6 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 
+import numpy as np
+from scipy.optimize import linprog
+
 from q3_routing import WeightedGraph, multi_source_dijkstra, normalized_edge, shortest_path
 
 
@@ -67,15 +70,7 @@ def multipath_flow_lp(
     max_utilization: float | None = None,
     delay_weight: float = 0.0,
 ) -> MultipathResult:
-    """Route fixed-path multi-commodity flow with a min-max-utilization search.
-
-    The mathematical model is a linear program.  For portability in the contest
-    workspace, the implementation below solves the feasibility form by binary
-    searching the maximum utilization ``rho`` and greedily filling residual
-    path bottlenecks.  This is exact for the common screening cases with
-    edge-disjoint alternatives and remains a fast conservative engineering
-    heuristic for larger coupled multi-commodity cases.
-    """
+    """Solve the fixed-path multi-commodity min-max-utilization linear program."""
 
     variables: list[tuple[tuple[int, int], int, PathOption]] = []
     for od, paths in candidate_path_map.items():
@@ -103,55 +98,85 @@ def multipath_flow_lp(
                 flows[(od, 0)] = float(demand)
         return MultipathResult(True, 0.0, flows, {}, "unconstrained links")
 
-    def try_route(rho: float) -> tuple[bool, dict[tuple[tuple[int, int], int], float], dict[tuple[int, int], float]]:
-        loads = {edge: 0.0 for edge in capacities}
-        flows: dict[tuple[tuple[int, int], int], float] = {}
-        for od, demand in demand_gbps.items():
-            remaining = float(demand)
-            indexed_paths = list(enumerate(candidate_path_map.get(od, [])))
-            indexed_paths.sort(key=lambda item: item[1].cost_s if delay_weight else 0.0)
-            while remaining > 1e-9:
-                best_idx: int | None = None
-                best_path: PathOption | None = None
-                best_bottleneck = 0.0
-                for idx, path in indexed_paths:
-                    constrained_edges = [edge for edge in path.edges if edge in capacities]
-                    if not constrained_edges:
-                        best_idx, best_path, best_bottleneck = idx, path, remaining
-                        break
-                    residual = min(rho * capacities[edge] - loads[edge] for edge in constrained_edges)
-                    if residual > best_bottleneck:
-                        best_idx, best_path, best_bottleneck = idx, path, residual
-                if best_idx is None or best_path is None or best_bottleneck <= 1e-9:
-                    return False, flows, loads
-                flow = min(remaining, best_bottleneck)
-                flows[(od, best_idx)] = flows.get((od, best_idx), 0.0) + flow
-                for edge in best_path.edges:
-                    if edge in loads:
-                        loads[edge] += flow
-                remaining -= flow
-        return True, flows, loads
+    variable_count = len(variables)
+    optimize_rho = max_utilization is None
+    rho_index = variable_count if optimize_rho else None
+    column_count = variable_count + int(optimize_rho)
 
-    hi = float(max_utilization) if max_utilization is not None else 1.0
-    feasible, flows, loads = try_route(hi)
-    while not feasible and max_utilization is None and hi < 1e6:
-        hi *= 2.0
-        feasible, flows, loads = try_route(hi)
-    if not feasible:
-        return MultipathResult(False, math.inf, message="demand exceeds path capacities")
+    objective = np.zeros(column_count, dtype=float)
+    if delay_weight and not optimize_rho:
+        objective[:variable_count] = [delay_weight * path.cost_s for _od, _idx, path in variables]
+    if rho_index is not None:
+        objective[rho_index] = 1.0
 
-    low = 0.0
-    best_flows, best_loads = flows, loads
-    for _ in range(60):
-        mid = 0.5 * (low + hi)
-        feasible_mid, flows_mid, loads_mid = try_route(mid)
-        if feasible_mid:
-            hi = mid
-            best_flows, best_loads = flows_mid, loads_mid
+    equality_rows: list[np.ndarray] = []
+    equality_rhs: list[float] = []
+    for od, demand in demand_gbps.items():
+        row = np.zeros(column_count, dtype=float)
+        for column, (variable_od, _idx, _path) in enumerate(variables):
+            if variable_od == od:
+                row[column] = 1.0
+        equality_rows.append(row)
+        equality_rhs.append(float(demand))
+
+    capacity_rows: list[np.ndarray] = []
+    capacity_rhs: list[float] = []
+    for edge, capacity in capacities.items():
+        row = np.zeros(column_count, dtype=float)
+        for column, (_od, _idx, path) in enumerate(variables):
+            if edge in path.edges:
+                row[column] = 1.0
+        if rho_index is not None:
+            row[rho_index] = -capacity
+            rhs = 0.0
         else:
-            low = mid
-    rho_actual = max((best_loads[e] / cap for e, cap in capacities.items()), default=0.0)
-    return MultipathResult(True, float(rho_actual), best_flows, best_loads, "min-max utilization search")
+            rhs = float(max_utilization) * capacity
+        capacity_rows.append(row)
+        capacity_rhs.append(rhs)
+
+    solution = linprog(
+        objective,
+        A_ub=np.asarray(capacity_rows),
+        b_ub=np.asarray(capacity_rhs),
+        A_eq=np.asarray(equality_rows),
+        b_eq=np.asarray(equality_rhs),
+        bounds=[(0.0, None)] * column_count,
+        method="highs",
+    )
+    if not solution.success:
+        return MultipathResult(False, math.inf, message=f"linear program infeasible: {solution.message}")
+
+    if optimize_rho and delay_weight:
+        secondary_objective = np.zeros(column_count, dtype=float)
+        secondary_objective[:variable_count] = [
+            delay_weight * path.cost_s for _od, _idx, path in variables
+        ]
+        rho_optimum = float(solution.x[rho_index])
+        secondary_bounds = [(0.0, None)] * variable_count + [(0.0, rho_optimum + 1e-9)]
+        secondary_solution = linprog(
+            secondary_objective,
+            A_ub=np.asarray(capacity_rows),
+            b_ub=np.asarray(capacity_rhs),
+            A_eq=np.asarray(equality_rows),
+            b_eq=np.asarray(equality_rhs),
+            bounds=secondary_bounds,
+            method="highs",
+        )
+        if secondary_solution.success:
+            solution = secondary_solution
+
+    flows: dict[tuple[tuple[int, int], int], float] = {}
+    loads = {edge: 0.0 for edge in capacities}
+    for column, (od, path_index, path) in enumerate(variables):
+        flow = float(solution.x[column])
+        if flow <= 1e-9:
+            continue
+        flows[(od, path_index)] = flow
+        for edge in path.edges:
+            if edge in loads:
+                loads[edge] += flow
+    rho_actual = max((loads[edge] / capacity for edge, capacity in capacities.items()), default=0.0)
+    return MultipathResult(True, float(rho_actual), flows, loads, "linear program solved")
 
 
 def throughput_binary_search(

@@ -16,7 +16,7 @@ from q3_access import access_sets_naive
 from q3_routing import WeightedGraph, multi_source_dijkstra, min_delay_routes, shortest_path
 from q3_statistics import delay_statistics
 from q3_traffic import baseline_loads, uniform_od_demand
-from q3_optimization import candidate_paths, multipath_flow_lp, throughput_binary_search
+from q3_optimization import PathOption, candidate_paths, multipath_flow_lp, throughput_binary_search
 from q3_pipeline import run_snapshot
 from q3_joint_search import (
     CommunicationEvaluation,
@@ -305,6 +305,59 @@ def test_candidate_paths_and_lp_split_flow_across_parallel_routes():
     assert result.feasible
     assert result.rho_max == pytest.approx(1.0, abs=1e-8)
     assert sum(result.path_flows_gbps.values()) == pytest.approx(10.0)
+
+
+def test_multipath_lp_finds_feasible_assignment_with_shared_bottleneck():
+    """LP 不应因 OD/路径遍历顺序而把可行的分流方案误判为不可行。"""
+
+    flexible_od = (0, 1)
+    constrained_od = (1, 2)
+    shared_path = PathOption([0, 1], 1.0)
+    alternate_path = PathOption([2, 3], 2.0)
+
+    result = multipath_flow_lp(
+        candidate_path_map={
+            flexible_od: [shared_path, alternate_path],
+            constrained_od: [shared_path],
+        },
+        demand_gbps={flexible_od: 5.0, constrained_od: 5.0},
+        link_capacity_gbps={(0, 1): 5.0, (2, 3): 5.0},
+        max_utilization=1.0,
+    )
+
+    assert result.feasible
+    assert result.rho_max == pytest.approx(1.0)
+    assert result.path_flows_gbps[(flexible_od, 1)] == pytest.approx(5.0)
+    assert result.path_flows_gbps[(constrained_od, 0)] == pytest.approx(5.0)
+
+
+def test_multipath_lp_minimizes_utilization_before_delay_cost():
+    """时延权重只能打破最优利用率方案间的平局，不能牺牲 rho_max。"""
+
+    flexible_od = (0, 3)
+    constrained_od = (0, 1)
+    short_shared_path = PathOption([0, 1, 3], 0.0)
+    long_alternate_path = PathOption([0, 2, 3], 100.0)
+    constrained_path = PathOption([0, 1], 0.0)
+
+    result = multipath_flow_lp(
+        candidate_path_map={
+            flexible_od: [short_shared_path, long_alternate_path],
+            constrained_od: [constrained_path],
+        },
+        demand_gbps={flexible_od: 5.0, constrained_od: 5.0},
+        link_capacity_gbps={
+            (0, 1): 10.0,
+            (1, 3): 10.0,
+            (0, 2): 10.0,
+            (2, 3): 10.0,
+        },
+        delay_weight=1.0,
+    )
+
+    assert result.feasible
+    assert result.rho_max == pytest.approx(0.5)
+    assert result.path_flows_gbps[(flexible_od, 1)] == pytest.approx(5.0)
 
 
 def test_throughput_binary_search_scales_until_capacity_limit():

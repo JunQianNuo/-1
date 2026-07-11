@@ -1,0 +1,9 @@
+﻿policy,S,stage,count
+P30_ge_0.95,1580,communication_eval,25
+P30_ge_0.95,1600,communication_eval,76
+P30_ge_0.95,1620,communication_eval,87
+P30_ge_0.95,1640,communication_eval,56
+strict_Tmax30,1580,delay_lower_bound_reject,25
+strict_Tmax30,1600,delay_lower_bound_reject,76
+strict_Tmax30,1620,delay_lower_bound_reject,87
+strict_Tmax30,1640,delay_lower_bound_reject,56

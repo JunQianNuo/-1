@@ -14,8 +14,9 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
+from fractions import Fraction
 import math
-from typing import Callable, Iterable, Literal, Sequence
+from typing import AbstractSet, Callable, Iterable, Literal, Sequence
 
 import numpy as np
 
@@ -27,6 +28,127 @@ from q3_topology import build_isl_graph, connected_components
 
 
 DelayPolicy = Literal["strict", "service_probability"]
+CandidateStatus = Literal[
+    "active", "deferred", "rejected", "verified", "numerical_error"
+]
+
+
+@dataclass(frozen=True)
+class StageOutcome:
+    status: CandidateStatus
+    reason: str
+    strict_evidence: bool
+    fidelity: str
+
+
+@dataclass(frozen=True)
+class CandidateAuditRecord:
+    params: ConstellationParams
+    status: CandidateStatus
+    fidelity: str
+    reason: str
+    strict_evidence: bool = False
+    feasible: bool = False
+    c1: float | None = None
+    c2: float | None = None
+    p30_reachable: float | None = None
+    p30_all: float | None = None
+    max_delay_s: float | None = None
+
+
+@dataclass(frozen=True)
+class LayerConclusion:
+    star_count: int
+    status: Literal["feasible_discrete", "infeasible", "inconclusive"]
+    best: CandidateAuditRecord | None
+    counts: dict[str, int]
+
+
+@dataclass(frozen=True)
+class StrictFilterSpec:
+    name: str
+    observed_rejection_rate: float
+    mean_cost_s: float
+    dependencies: frozenset[str] = frozenset()
+
+
+def classify_stage_outcome(
+    *, fidelity: str, feasible: bool, strict_evidence: bool, reason: str
+) -> StageOutcome:
+    """Map one fidelity-stage result to its auditable candidate status."""
+
+    if fidelity not in {"low", "medium", "high"}:
+        raise ValueError("fidelity must be 'low', 'medium', or 'high'")
+    if feasible:
+        status: CandidateStatus = "verified" if fidelity == "high" else "active"
+    elif strict_evidence:
+        status = "rejected"
+    else:
+        status = "deferred"
+    return StageOutcome(status, reason, strict_evidence, fidelity)
+
+
+def conclude_star_layer(
+    star_count: int, records: Sequence[CandidateAuditRecord]
+) -> LayerConclusion:
+    """Conclude a star-count layer without treating unresolved states as rejection."""
+
+    counts: dict[str, int] = {}
+    for record in records:
+        if record.params.total_satellites != star_count:
+            raise ValueError("record star_count does not match the layer")
+        counts[record.status] = counts.get(record.status, 0) + 1
+
+    verified = [
+        record for record in records if record.status == "verified" and record.feasible
+    ]
+    if verified:
+        return LayerConclusion(
+            star_count,
+            "feasible_discrete",
+            max(verified, key=_candidate_robustness_key),
+            counts,
+        )
+    if records and all(record.status == "rejected" for record in records):
+        return LayerConclusion(star_count, "infeasible", None, counts)
+    return LayerConclusion(star_count, "inconclusive", None, counts)
+
+
+def order_ready_strict_filters(
+    filters: Sequence[StrictFilterSpec], completed: AbstractSet[str]
+) -> list[StrictFilterSpec]:
+    """Return dependency-ready strict filters in expected rejection-per-cost order."""
+
+    for item in filters:
+        if not math.isfinite(item.observed_rejection_rate) or not (
+            0.0 <= item.observed_rejection_rate <= 1.0
+        ):
+            raise ValueError("observed_rejection_rate must be finite and lie in [0, 1]")
+        if not math.isfinite(item.mean_cost_s) or item.mean_cost_s <= 0.0:
+            raise ValueError("mean_cost_s must be positive and finite")
+    ready = [item for item in filters if item.dependencies <= completed]
+    return sorted(
+        ready,
+        key=lambda item: (-item.observed_rejection_rate / item.mean_cost_s, item.name),
+    )
+
+
+def _candidate_robustness_key(record: CandidateAuditRecord) -> tuple[float, ...]:
+    def margin(value: float | None, threshold: float) -> float:
+        return -math.inf if value is None else value - threshold
+
+    return (
+        margin(record.p30_reachable, 0.999),
+        margin(record.p30_all, 0.95),
+        margin(record.c1, 0.999),
+        margin(record.c2, 0.95),
+        -math.inf if record.max_delay_s is None else -record.max_delay_s,
+        -record.params.planes,
+        -record.params.sats_per_plane,
+        -record.params.phase_factor,
+        -record.params.inclination_deg,
+        -record.params.u0_deg,
+    )
 
 
 @dataclass(frozen=True)
@@ -160,6 +282,142 @@ class CoverageProgress:
             feasible=c1 >= self.c1_min and c2 >= self.c2_min,
             samples=self.total_samples,
         )
+
+
+def max_reachable_late_samples(reachable_count: int, eta_reach: float = 0.999) -> int:
+    """Maximum late reachable samples allowed by a reachable-service target."""
+
+    if reachable_count < 0:
+        raise ValueError("reachable_count must be nonnegative")
+    if not math.isfinite(eta_reach) or not 0.0 <= eta_reach <= 1.0:
+        raise ValueError("eta_reach must lie in [0, 1]")
+    late_fraction = Fraction(1) - Fraction(str(eta_reach))
+    return late_fraction.numerator * reachable_count // late_fraction.denominator
+
+
+@dataclass
+class ServiceProgress:
+    """Optimistic weighted service bounds for a partially processed stream."""
+
+    total_weight: float
+    eta_reach: float = 0.999
+    eta_all: float = 0.95
+    processed_weight: float = 0.0
+    reachable_weight: float = 0.0
+    within_limit_weight: float = 0.0
+
+    def __post_init__(self) -> None:
+        _validate_positive_finite(self.total_weight, "total_weight")
+        _validate_unit_interval(self.eta_reach, "eta_reach")
+        _validate_unit_interval(self.eta_all, "eta_all")
+
+    def update(self, weight: float, reachable: bool, within_limit: bool) -> bool:
+        _validate_positive_finite(weight, "weight")
+        if within_limit and not reachable:
+            raise ValueError("within-limit samples must be reachable")
+        accepted_weight = _accepted_weight(
+            weight, processed_weight=self.processed_weight, total_weight=self.total_weight
+        )
+        self.processed_weight = min(self.processed_weight + accepted_weight, self.total_weight)
+        if reachable:
+            self.reachable_weight = min(
+                self.reachable_weight + accepted_weight, self.processed_weight
+            )
+        if within_limit:
+            self.within_limit_weight = min(
+                self.within_limit_weight + accepted_weight, self.reachable_weight
+            )
+        return self.can_still_pass()
+
+    def upper_bounds(self) -> tuple[float, float]:
+        remaining = max(0.0, self.total_weight - self.processed_weight)
+        reachable_denominator = self.reachable_weight + remaining
+        if reachable_denominator == 0.0:
+            reachable_upper = 1.0
+        else:
+            reachable_upper = (self.within_limit_weight + remaining) / reachable_denominator
+        all_upper = (self.within_limit_weight + remaining) / self.total_weight
+        return float(reachable_upper), float(all_upper)
+
+    def can_still_pass_reachable(self) -> bool:
+        reachable_upper, _ = self.upper_bounds()
+        return reachable_upper + _ulp_tolerance(reachable_upper, self.eta_reach) >= self.eta_reach
+
+    def can_still_pass_all(self) -> bool:
+        _, all_upper = self.upper_bounds()
+        return all_upper + _ulp_tolerance(all_upper, self.eta_all) >= self.eta_all
+
+    def can_still_pass(self) -> bool:
+        return self.can_still_pass_reachable() and self.can_still_pass_all()
+
+
+@dataclass
+class WeightedCoverageProgress:
+    """Optimistic area-weighted coverage bounds for a partial scan."""
+
+    total_weight: float
+    c1_min: float = 0.999
+    c2_min: float = 0.95
+    processed_weight: float = 0.0
+    single_hit_weight: float = 0.0
+    double_hit_weight: float = 0.0
+
+    def __post_init__(self) -> None:
+        _validate_positive_finite(self.total_weight, "total_weight")
+        _validate_unit_interval(self.c1_min, "c1_min")
+        _validate_unit_interval(self.c2_min, "c2_min")
+
+    def update(self, weight: float, single_covered: bool, double_covered: bool) -> bool:
+        _validate_positive_finite(weight, "weight")
+        accepted_weight = _accepted_weight(
+            weight, processed_weight=self.processed_weight, total_weight=self.total_weight
+        )
+        self.processed_weight = min(self.processed_weight + accepted_weight, self.total_weight)
+        if single_covered:
+            self.single_hit_weight = min(
+                self.single_hit_weight + accepted_weight, self.processed_weight
+            )
+        if double_covered:
+            self.double_hit_weight = min(
+                self.double_hit_weight + accepted_weight, self.processed_weight
+            )
+        return self.can_still_pass()
+
+    def upper_bounds(self) -> tuple[float, float]:
+        remaining = max(0.0, self.total_weight - self.processed_weight)
+        return (
+            float((self.single_hit_weight + remaining) / self.total_weight),
+            float((self.double_hit_weight + remaining) / self.total_weight),
+        )
+
+    def can_still_pass(self) -> bool:
+        c1_upper, c2_upper = self.upper_bounds()
+        return (
+            c1_upper + _ulp_tolerance(c1_upper, self.c1_min) >= self.c1_min
+            and c2_upper + _ulp_tolerance(c2_upper, self.c2_min) >= self.c2_min
+        )
+
+
+def _accepted_weight(weight: float, *, processed_weight: float, total_weight: float) -> float:
+    remaining = max(0.0, total_weight - processed_weight)
+    tolerance = _ulp_tolerance(weight, remaining, processed_weight, total_weight)
+    if weight > remaining + tolerance:
+        raise ValueError("processed weight exceeds total_weight")
+    return min(weight, remaining)
+
+
+def _ulp_tolerance(*values: float) -> float:
+    return 8.0 * max(math.ulp(value) for value in values)
+
+
+def _validate_positive_finite(value: float, name: str) -> None:
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError(f"{name} must be positive and finite")
+
+
+def _validate_unit_interval(value: float, name: str) -> None:
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        raise ValueError(f"{name} must lie in [0, 1]")
 
 
 def manufacturing_cost_wan(star_count: int) -> int:

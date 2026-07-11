@@ -1,0 +1,64 @@
+{
+  "constellation": {
+    "planes": 37,
+    "sats_per_plane": 40,
+    "phase_factor": 31,
+    "inclination_deg": 50.0,
+    "raan0_deg": 0.0,
+    "u0_deg": 0.0,
+    "satellites": 1480
+  },
+  "sampling": {
+    "duration_s": 86164.09,
+    "step_s": 900.0,
+    "time_steps": 97,
+    "grid_step_deg": 25.0,
+    "ground_points": 12,
+    "od_time_samples": 12804
+  },
+  "delay": {
+    "delay_limit_s": 0.03,
+    "mean_delay_s_reachable": 0.026406924375323597,
+    "mean_delay_ms_reachable": 26.406924375323598,
+    "max_delay_s_reachable": 0.0898308892024424,
+    "max_delay_ms_reachable": 89.83088920244239,
+    "p50_delay_ms_reachable": 25.446824169901397,
+    "p90_delay_ms_reachable": 39.0881506045747,
+    "p95_delay_ms_reachable": 45.74481780858773,
+    "p99_delay_ms_reachable": 53.65561237274178,
+    "reachable_count": 12782,
+    "unreachable_count": 22,
+    "unreachable_rate": 0.001718213058419244,
+    "within_30ms_count_all": 8566,
+    "within_30ms_rate_all": 0.669009684473602,
+    "within_30ms_count_reachable": 8566,
+    "within_30ms_rate_reachable": 0.6701611641370677,
+    "strict_tmax_30ms_satisfied": false
+  },
+  "topology": {
+    "component_count_max": 1,
+    "component_count_min": 1,
+    "edge_count_min": 2960,
+    "edge_count_max": 2960,
+    "max_degree_max": 4,
+    "min_degree_min": 4,
+    "max_link_distance_km": 1086.0308030649371
+  },
+  "access": {
+    "empty_ground_time_count": 1,
+    "snapshots_with_empty_access": 1,
+    "min_access_over_snapshots": 0,
+    "max_access_over_snapshots": 4,
+    "mean_access_over_snapshots": 2.3144329896907214
+  },
+  "traffic_1gbps": {
+    "served_ratio_mean": 0.9982817869415809,
+    "served_ratio_min": 0.8333333333333334,
+    "served_gbps_mean": 0.9982817869415809,
+    "served_gbps_min": 0.8333333333333334,
+    "max_access_load_gbps": 0.16666666666666657,
+    "max_access_utilization": 0.008333333333333328,
+    "max_relay_load_gbps": 0.2575757575757574,
+    "max_link_load_gbps": 0.19696969696969685
+  }
+}

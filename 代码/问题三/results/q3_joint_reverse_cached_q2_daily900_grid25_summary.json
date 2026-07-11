@@ -1,0 +1,47 @@
+{
+  "input": {
+    "q2_cache": "代码/问题二/results/q2_free_search/fine_records.csv",
+    "coverage_filter": "S>=1480, C1>=0.999, C2>=0.95",
+    "q2_cached_candidates": 243,
+    "S_values": [
+      1480,
+      1500,
+      1520,
+      1540,
+      1560
+    ],
+    "q3_sampling": {
+      "duration_s": 86164.09,
+      "step_s": 900.0,
+      "grid_step_deg": 25.0,
+      "ground_points": 12,
+      "od_pairs": 132
+    },
+    "topology_method": "nearest",
+    "physical_coverage": true
+  },
+  "strict_Tmax30": {
+    "searched_layers": [
+      1480,
+      1500,
+      1520,
+      1540,
+      1560
+    ],
+    "found": null,
+    "interpretation": "found is null => no cached q2 feasible candidate in searched range satisfies strict Tmax<=30ms under this communication screen"
+  },
+  "P30_ge_0.95": {
+    "searched_layers": [
+      1480,
+      1500,
+      1520,
+      1540,
+      1560
+    ],
+    "eta": 0.95,
+    "found": null,
+    "interpretation": "found is null => no cached q2 feasible candidate in searched range satisfies P30>=0.95 under this communication screen"
+  },
+  "elapsed_s": 235.85156083106995
+}

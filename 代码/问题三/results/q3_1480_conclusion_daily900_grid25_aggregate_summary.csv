@@ -1,0 +1,2 @@
+﻿satellites,time_steps,ground_points,od_time_samples,mean_delay_ms_reachable,max_delay_ms_reachable,p95_delay_ms_reachable,p99_delay_ms_reachable,within_30ms_rate_all,within_30ms_rate_reachable,unreachable_rate,strict_tmax_30ms_satisfied,component_count_max,max_access_utilization_1gbps
+1480,97,12,12804,26.406924375323598,89.83088920244239,45.74481780858773,53.65561237274178,0.669009684473602,0.6701611641370677,0.001718213058419244,False,1,0.008333333333333328

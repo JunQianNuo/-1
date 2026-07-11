@@ -652,8 +652,6 @@ def test_joint_evaluation_propagates_once_per_selected_time(monkeypatch):
         config=Q3Config(coverage_angle_rad=math.pi),
         c1_min=0.0,
         c2_min=0.0,
-        eta_reach=0.0,
-        eta_all=0.0,
     )
     assert result.status == "verified"
     assert calls == [0.0, 10.0]
@@ -676,8 +674,6 @@ def test_repeated_fidelity_does_no_new_work_or_propagation(monkeypatch):
         config=Q3Config(coverage_angle_rad=math.pi),
         c1_min=0.0,
         c2_min=0.0,
-        eta_reach=0.0,
-        eta_all=0.0,
     )
     first, state = q3_joint_evaluator.evaluate_joint_candidate(**kwargs)
     weights = (state.coverage_progress.processed_weight, state.service_progress.processed_weight)
@@ -697,8 +693,6 @@ def test_low_fidelity_empirical_failure_remains_active(monkeypatch):
         config=Q3Config(coverage_angle_rad=0.0),
         c1_min=0.5,
         c2_min=0.5,
-        eta_reach=0.0,
-        eta_all=0.0,
     )
     assert result.status == "active"
     assert result.c1 == 0.0
@@ -739,6 +733,30 @@ def test_tiny_connected_candidate_processes_all_samples_consistently(monkeypatch
     assert len(state.processed_od_keys) == 2
 
 
+def test_complete_coverage_feasible_candidate_is_verified_even_with_low_p30(monkeypatch):
+    sat = np.array([[7000.0, 0.0, 0.0], [7000.0, 0.0, 0.0]])
+    monkeypatch.setattr(q3_joint_evaluator, "satellite_positions", lambda *a: (sat, sat))
+    monkeypatch.setattr(q3_joint_evaluator, "build_isl_graph", lambda *a, **k: WeightedGraph(1))
+    monkeypatch.setattr(
+        q3_joint_evaluator,
+        "batched_ground_delay_matrix",
+        lambda *a, **k: np.array([[0.0, 0.1], [0.02, 0.0]]),
+    )
+    result, _ = q3_joint_evaluator.evaluate_joint_candidate(
+        ConstellationParams(1, 1, 0, 0.0),
+        mother_grid=_joint_grid(),
+        fidelity=_fidelity(),
+        config=Q3Config(coverage_angle_rad=math.pi, delay_limit_s=0.03),
+    )
+    assert result.status == "verified"
+    assert result.message == "coverage_pass"
+    assert (result.c1, result.c2) == (1.0, 1.0)
+    assert result.p30_all < 1.0
+    assert result.p30_all == pytest.approx(0.5)
+    assert result.late_reachable_count == 1
+    assert result.max_delay_s == pytest.approx(0.1)
+
+
 def test_state_rejects_same_total_mother_grid_with_swapped_weights(monkeypatch):
     sat = np.array([[7000.0, 0.0, 0.0]])
     monkeypatch.setattr(q3_joint_evaluator, "satellite_positions", lambda *a: (sat, sat))
@@ -756,8 +774,6 @@ def test_state_rejects_same_total_mother_grid_with_swapped_weights(monkeypatch):
         config=Q3Config(coverage_angle_rad=math.pi),
         c1_min=0.0,
         c2_min=0.0,
-        eta_reach=0.0,
-        eta_all=0.0,
     )
     swapped = q3_joint_evaluator.MotherGrid(
         original.times_s,
@@ -774,8 +790,6 @@ def test_state_rejects_same_total_mother_grid_with_swapped_weights(monkeypatch):
             config=Q3Config(coverage_angle_rad=math.pi),
             c1_min=0.0,
             c2_min=0.0,
-            eta_reach=0.0,
-            eta_all=0.0,
         )
 
 
@@ -805,28 +819,6 @@ def test_joint_grid_validation_additional_invalid_inputs(mother, fidelity, error
         )
 
 
-def test_delay_lower_bound_all_upper_returns_before_graph_and_routing(monkeypatch):
-    sat = np.array([[7000.0, 0.0, 0.0]])
-    monkeypatch.setattr(q3_joint_evaluator, "satellite_positions", lambda *a: (sat, sat))
-    monkeypatch.setattr(q3_joint_evaluator, "build_isl_graph", lambda *a, **k: pytest.fail("graph built"))
-    monkeypatch.setattr(q3_joint_evaluator, "batched_ground_delay_matrix", lambda *a, **k: pytest.fail("routing called"))
-    result, _ = q3_joint_evaluator.evaluate_joint_candidate(
-        ConstellationParams(1, 1, 0, 0.0),
-        mother_grid=_joint_grid(
-            times=(0.0, 1.0),
-            communication_points=np.array([[-6371.0, 0.0, 0.0], [-6371.0, 0.0, 0.0]]),
-        ),
-        fidelity=_fidelity(times=(0,)),
-        config=Q3Config(coverage_angle_rad=0.0),
-        c1_min=0.0,
-        c2_min=0.0,
-        eta_reach=1.0,
-        eta_all=0.75,
-    )
-    assert result.status == "rejected"
-    assert result.message == "delay_lower_bound_all_upper"
-
-
 def test_lower_bound_misses_do_not_make_reachable_ratio_impossible(monkeypatch):
     sat = np.array([[7000.0, 0.0, 0.0]])
     monkeypatch.setattr(q3_joint_evaluator, "satellite_positions", lambda *a: (sat, sat))
@@ -842,18 +834,15 @@ def test_lower_bound_misses_do_not_make_reachable_ratio_impossible(monkeypatch):
         config=Q3Config(coverage_angle_rad=0.0),
         c1_min=0.0,
         c2_min=0.0,
-        eta_reach=1.0,
-        eta_all=0.5,
     )
     assert result.status == "active"
     assert result.p30_reachable == 1.0
     assert result.p30_all == 0.0
 
 
-def test_communication_upper_bound_rejects_after_actual_routes(monkeypatch):
+def test_late_routes_are_reported_as_diagnostics_not_rejected(monkeypatch):
     sat = np.array([[7000.0, 0.0, 0.0]])
     monkeypatch.setattr(q3_joint_evaluator, "satellite_positions", lambda *a: (sat, sat))
-    monkeypatch.setattr(q3_joint_evaluator, "optimistic_delay_lower_bounds", lambda **k: {(0, 1): 0.0, (1, 0): 0.0})
     monkeypatch.setattr(q3_joint_evaluator, "build_isl_graph", lambda *a, **k: WeightedGraph(1))
     monkeypatch.setattr(q3_joint_evaluator, "batched_ground_delay_matrix", lambda *a, **k: np.array([[0.0, 0.1], [0.1, 0.0]]))
     result, _ = q3_joint_evaluator.evaluate_joint_candidate(
@@ -864,8 +853,12 @@ def test_communication_upper_bound_rejects_after_actual_routes(monkeypatch):
         c1_min=0.0,
         c2_min=0.0,
     )
-    assert result.status == "rejected"
-    assert result.message == "communication_upper_bound"
+    assert result.status == "verified"
+    assert result.message == "coverage_pass"
+    assert result.p30_all == 0.0
+    assert result.p30_reachable == 0.0
+    assert result.late_reachable_count == 2
+    assert result.max_delay_s == pytest.approx(0.1)
 
 
 # --- Task 1: pure saturation-decision module ---

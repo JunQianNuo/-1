@@ -572,8 +572,10 @@ def _rank_key(row, coverage):
         result = row.get(name)
         return missing if result is None else float(result)
     return (
-        value("p30_reachable"), value("p30_all"), float(coverage[0]), float(coverage[1]),
-        -value("max_delay_s", math.inf), tuple(-v if isinstance(v, (int, float)) else v for v in _record_parameter_values(row)),
+        value("p30_all"), value("p30_reachable"),
+        -value("max_delay_s", math.inf),
+        float(coverage[0]), float(coverage[1]),
+        tuple(-v if isinstance(v, (int, float)) else v for v in _record_parameter_values(row)),
     )
 
 

@@ -15,7 +15,6 @@ from q3_joint_search import (
     ServiceProgress,
     WeightedCoverageProgress,
     max_reachable_late_samples,
-    optimistic_delay_lower_bounds,
 )
 from q3_orbit import satellite_positions
 from q3_topology import build_isl_graph
@@ -149,8 +148,6 @@ def evaluate_joint_candidate(
     simulation: SimulationConfig | None = None,
     c1_min: float = 0.999,
     c2_min: float = 0.95,
-    eta_reach: float = 0.999,
-    eta_all: float = 0.95,
 ) -> tuple[JointEvaluation, JointEvaluationState]:
     """Evaluate newly selected mother-grid keys, reusing prior progress."""
 
@@ -161,8 +158,6 @@ def evaluate_joint_candidate(
     sim = simulation or SimulationConfig()
     _unit_interval(c1_min, "c1_min")
     _unit_interval(c2_min, "c2_min")
-    _unit_interval(eta_reach, "eta_reach")
-    _unit_interval(eta_all, "eta_all")
 
     total_coverage = len(mother.times_s) * float(np.sum(mother.coverage_weights))
     ground_count = len(mother.communication_ground_ecef_km)
@@ -175,7 +170,7 @@ def evaluate_joint_candidate(
     if state is None:
         state = JointEvaluationState(
             WeightedCoverageProgress(total_coverage, c1_min, c2_min),
-            ServiceProgress(total_service, eta_reach, eta_all),
+            ServiceProgress(total_service),
             set(),
             set(),
             _mother_digest=_mother_grid_digest(mother),
@@ -188,8 +183,6 @@ def evaluate_joint_candidate(
             total_service,
             c1_min,
             c2_min,
-            eta_reach,
-            eta_all,
         )
 
     for time_index in selected.time_indices:
@@ -229,23 +222,6 @@ def evaluate_joint_candidate(
         communication_points = mother.communication_ground_ecef_km[comm]
         access = access_sets_naive(satellite_ecef, communication_points, cfg.access_angle_rad)
         local_index = {mother_index: local for local, mother_index in enumerate(comm)}
-        local_pairs = [(local_index[a], local_index[b]) for a, b in new_pairs]
-        lower_bounds = optimistic_delay_lower_bounds(
-            access_sets=access,
-            satellite_ecef_km=satellite_ecef,
-            ground_points_ecef_km=communication_points,
-            od_pairs=local_pairs,
-            c_km_s=cfg.speed_of_light_km_s,
-            processing_delay_s=cfg.processing_delay_s,
-        )
-        guaranteed_misses = sum(value > cfg.delay_limit_s for value in lower_bounds.values())
-        optimistic_all = (
-            state.service_progress.within_limit_weight
-            + (state.service_progress.total_weight - state.service_progress.processed_weight)
-            - guaranteed_misses * mother.communication_sample_weight
-        ) / state.service_progress.total_weight
-        if optimistic_all < eta_all:
-            return _result(state, mother, "rejected", "delay_lower_bound_all_upper"), state
 
         graph = build_isl_graph(
             satellite_eci, params, config=cfg, method=sim.topology_method
@@ -271,8 +247,6 @@ def evaluate_joint_candidate(
                 state._max_delay_s = delay if state._max_delay_s is None else max(state._max_delay_s, delay)
             else:
                 state._unreachable_count += 1
-        if not state.service_progress.can_still_pass():
-            return _result(state, mother, "rejected", "communication_upper_bound"), state
 
     complete = (
         len(state.processed_coverage_keys) == len(mother.times_s) * len(mother.coverage_weights)
@@ -281,14 +255,11 @@ def evaluate_joint_candidate(
     )
     if not complete:
         return _result(state, mother, "active", "incomplete"), state
-    feasible = (
-        _coverage_rates(state, mother)[0] >= c1_min
-        and _coverage_rates(state, mother)[1] >= c2_min
-        and _service_rates(state, mother)[0] >= eta_reach
-        and _service_rates(state, mother)[1] >= eta_all
-    )
+    c1, c2 = _coverage_rates(state, mother)
+    feasible = c1 >= c1_min and c2 >= c2_min
     status = "verified" if feasible else "rejected"
-    return _result(state, mother, status, "constraints_pass" if feasible else "constraints_fail"), state
+    message = "coverage_pass" if feasible else "coverage_fail"
+    return _result(state, mother, status, message), state
 
 
 def _result(state: JointEvaluationState, mother: MotherGrid, status: str, message: str) -> JointEvaluation:
@@ -374,14 +345,14 @@ def _index_array(values: np.ndarray, name: str, upper: int) -> None:
 
 
 def _validate_state(
-    state, mother_digest, coverage_total, service_total, c1, c2, eta_reach, eta_all
+    state, mother_digest, coverage_total, service_total, c1, c2
 ):
     if state._mother_digest != mother_digest:
         raise ValueError("state is incompatible with the mother grid")
     coverage = state.coverage_progress
     service = state.service_progress
-    expected = (coverage_total, service_total, c1, c2, eta_reach, eta_all)
-    actual = (coverage.total_weight, service.total_weight, coverage.c1_min, coverage.c2_min, service.eta_reach, service.eta_all)
+    expected = (coverage_total, service_total, c1, c2)
+    actual = (coverage.total_weight, service.total_weight, coverage.c1_min, coverage.c2_min)
     if any(not math.isclose(a, b, rel_tol=1e-12, abs_tol=0.0) for a, b in zip(actual, expected)):
         raise ValueError("state is incompatible with the mother grid or thresholds")
 

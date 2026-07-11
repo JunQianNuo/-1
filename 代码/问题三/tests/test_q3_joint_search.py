@@ -920,3 +920,57 @@ def test_first_saturation_rejects_non_finite_fields():
     ]
     with pytest.raises(ValueError):
         first_saturation_decision(data)
+
+
+# --- Task 3: saturation search mode, outputs, and reports ---
+from q3_saturation import SaturationDecision
+
+
+def test_parse_saturation_defaults():
+    args = run_q3_joint_search.parse_args(["--mode", "saturation"])
+    assert (args.s_step, args.forward_window_s) == (20, 200)
+    assert args.max_window_gain == pytest.approx(.01)
+    assert args.max_gain_per_100 == pytest.approx(.005)
+
+
+def test_saturation_main_writes_curve_and_selects_first_stable_layer(tmp_path, monkeypatch):
+    key = run_q3_joint_search.candidate_key(
+        ConstellationParams(40, 43, 0, 50.0, u0_deg=0.0)
+    )
+    selected = SaturationObservation(1700, 0.86, key, 0.90, 1.0, 0.97, 0.04)
+    observations = [
+        selected,
+        SaturationObservation(1800, 0.865, key, 0.90, 1.0, 0.97, 0.04),
+        SaturationObservation(1900, 0.87, key, 0.90, 1.0, 0.97, 0.04),
+    ]
+    decision = SaturationDecision(
+        status="saturated",
+        selected=selected,
+        window_end_stars=1900,
+        window_max_p30_all=0.87,
+        window_gain=0.01,
+        gain_per_100_stars=0.005,
+    )
+
+    def fake_run(*args, **kwargs):
+        return decision, observations
+
+    monkeypatch.setattr(run_q3_joint_search, "_run_saturation", fake_run)
+
+    out = tmp_path / "sat"
+    code = run_q3_joint_search.main([
+        "--mode", "saturation", "--s-lb", "1440", "--s-max", "1800",
+        "--workers", "1", "--out", str(out),
+        "--duration-s", "0", "--high-time-step-s", "900",
+        "--coverage-high-step-deg", "4", "--communication-high-step-deg", "25",
+    ])
+    summary = json.loads((out / "joint_summary.json").read_text(encoding="utf-8"))
+    assert code == 0
+    assert summary["claim"] == "saturated_minimum"
+    assert summary["objective"] == "p30_all_saturation"
+    assert summary["best_candidate"]["S"] == 1700
+    assert "n_max" not in summary["sample_counts"]
+    curve = out / "joint_saturation_curve.csv"
+    assert curve.exists()
+    rows = list(csv.DictReader(curve.open(encoding="utf-8")))
+    assert [int(row["S"]) for row in rows] == [1700, 1800, 1900]

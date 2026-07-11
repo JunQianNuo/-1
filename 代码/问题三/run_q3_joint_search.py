@@ -44,15 +44,21 @@ from q3_joint_search import (
     u0_periodic_grid,
 )
 from q3_orbit import ground_ecef, make_latlon_grid, make_time_grid
+from q3_saturation import (
+    SaturationObservation,
+    first_saturation_decision,
+)
 
 
 SCHEMA_VERSION = "q3-joint-v1"
 STAGES = ("low", "medium", "high")
 STRICT_REASONS = {
     "coverage_upper_bound",
-    "delay_lower_bound_all_upper",
-    "communication_upper_bound",
 }
+SATURATION_CURVE_COLUMNS = [
+    "S", "candidate_key", "M", "N", "F", "i", "u0",
+    "c1", "c2", "p30_all", "p30_reachable", "max_delay_s",
+]
 CANDIDATE_COLUMNS = [
     "sequence", "mode", "stage", "candidate_key", "S", "M", "N", "F",
     "i", "u0", "status", "strict_evidence", "feasible", "c1", "c2",
@@ -166,11 +172,15 @@ def load_checkpoint(path: Path, *, expected_config_digest: str) -> dict[str, dic
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=("discover", "certify", "both"), default="both")
+    parser.add_argument("--mode", choices=("discover", "certify", "both", "saturation"), default="both")
     parser.add_argument("--q2-cache", type=Path)
     parser.add_argument("--out", type=Path, default=Path("results/q3_joint"))
     parser.add_argument("--s-lb", type=int, default=1)
     parser.add_argument("--s-max", type=int, default=1800)
+    parser.add_argument("--s-step", type=int, default=20)
+    parser.add_argument("--forward-window-s", type=int, default=200)
+    parser.add_argument("--max-window-gain", type=float, default=0.01)
+    parser.add_argument("--max-gain-per-100", type=float, default=0.005)
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--duration-s", type=float, default=86164.09)
@@ -332,6 +342,55 @@ def main(argv: Sequence[str] | None = None) -> int:
     best_record: dict | None = None
     claim = "inconclusive"
 
+    if args.mode == "saturation":
+        summary_extra: dict = {}
+        decision, observations = _run_saturation(
+            args, mother, fidelities, q3_config, simulation, digest,
+            checkpoint_path, completed, persisted, timing_rows, layer_rows,
+            sequence_counter, summary_extra,
+        )
+        records = sorted(persisted, key=lambda row: (int(row["sequence"]), row["mode"], row["stage"]))
+        _write_csv(output / "joint_candidate_records.csv", CANDIDATE_COLUMNS, records)
+        _write_csv(output / "joint_stage_timing.csv", TIMING_COLUMNS, timing_rows)
+        _write_csv(output / "joint_layer_summary.csv", LAYER_COLUMNS, layer_rows)
+        curve_rows = [_curve_row_from_observation(obs) for obs in observations]
+        _write_csv(output / "joint_saturation_curve.csv", SATURATION_CURVE_COLUMNS, curve_rows)
+        claim = _saturation_claim(decision.status)
+        best_candidate = None if decision.selected is None else _observation_summary(decision.selected)
+        summary = {
+            "schema_version": SCHEMA_VERSION,
+            "config_digest": digest,
+            "mode": args.mode,
+            "claim": claim,
+            "search_claim": claim,
+            "objective": "p30_all_saturation",
+            "coverage_constraints": {"c1_min": 0.999, "c2_min": 0.95},
+            "forward_window": {
+                "s_step": args.s_step,
+                "forward_window_s": args.forward_window_s,
+                "max_window_gain": args.max_window_gain,
+                "max_gain_per_100": args.max_gain_per_100,
+            },
+            "saturation_decision": _decision_summary(decision),
+            "sample_counts": {
+                "times": len(mother.times_s),
+                "coverage_points": len(mother.coverage_weights),
+                "communication_points": len(mother.communication_ground_ecef_km),
+            },
+            "best_candidate": best_candidate,
+            "observation_count": len(observations),
+            "layer_status": None if not layer_rows else layer_rows[-1]["status"],
+            "candidate_stage_records": len(records),
+            "elapsed_s": time.perf_counter() - started,
+            **summary_extra,
+        }
+        (output / "joint_summary.json").write_text(
+            json.dumps(summary, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False) + "\n",
+            encoding="utf-8",
+        )
+        _write_report(output / "joint_report.md", summary)
+        return 0
+
     if args.mode in {"discover", "both"}:
         if args.q2_cache is None:
             raise ValueError("--q2-cache is required for discover and both modes")
@@ -367,7 +426,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "mode": args.mode,
         "claim": claim,
         "search_claim": claim,
-        "thresholds": {"c1_min": 0.999, "c2_min": 0.95, "eta_reach": 0.999, "eta_all": 0.95, "delay_limit_s": q3_config.delay_limit_s},
+        "thresholds": {"c1_min": 0.999, "c2_min": 0.95, "delay_limit_s": q3_config.delay_limit_s},
         "sample_counts": {
             "times": len(mother.times_s),
             "coverage_points": len(mother.coverage_weights),
@@ -477,6 +536,161 @@ def _run_certification(
     if not any_layer or lower_inconclusive:
         return "inconclusive", None
     return "infeasible", None
+
+
+def _saturation_search_config(args, config, simulation) -> JointSearchConfig:
+    """Search bounds for saturation mode.  ``s_lb`` is used unmodified so the
+    sampled layers start at the user-provided lower bound."""
+    return JointSearchConfig(
+        s_lb=args.s_lb,
+        s_max=args.s_max,
+        m_values=range(args.m_min, args.m_max + 1),
+        n_values=range(args.n_min, args.n_max + 1),
+        inclinations_deg=args.inclinations_deg,
+        u0_divisions=args.u0_divisions,
+        q3_config=config,
+        simulation=simulation,
+    )
+
+
+def _evaluate_layer_through_high(
+    layer, args, mother, fidelities, config, simulation, digest,
+    checkpoint_path, completed, persisted, timing_rows, sequence_counter,
+) -> dict[str, dict]:
+    """Run the low -> medium -> high pipeline for every candidate in one layer.
+
+    Returns the terminal audit row for each candidate keyed by candidate_key.
+    """
+    params = [
+        ConstellationParams(m, n, phase, inclination, u0_deg=u0)
+        for m, n in layer.pairs
+        for phase in range(m)
+        for inclination in args.inclinations_deg
+        for u0 in u0_periodic_grid(sats_per_plane=n, divisions=args.u0_divisions)
+    ]
+    terminal: dict[str, dict] = {}
+    active = params
+    for stage in STAGES:
+        if not active:
+            break
+        rows = _evaluate_stage_batch(
+            active, stage, "saturation", args.workers, mother, fidelities,
+            config, simulation, digest, checkpoint_path, completed, persisted,
+            timing_rows, sequence_counter,
+        )
+        terminal.update({row["candidate_key"]: row for row in rows})
+        active = [p for p in active if terminal[candidate_key(p)]["status"] not in {"rejected", "numerical_error"}]
+        active.sort(key=lambda p: _rank_key(terminal[candidate_key(p)], (0.0, 0.0)), reverse=True)
+    return terminal
+
+
+def _best_verified_high_record(terminal: dict[str, dict]) -> dict | None:
+    """Best coverage-feasible high-fidelity row by ``_rank_key`` ordering."""
+    verified = [
+        row for row in terminal.values()
+        if row["stage"] == "high" and row["status"] == "verified" and row["feasible"]
+    ]
+    if not verified:
+        return None
+    return max(
+        verified,
+        key=lambda row: _rank_key(
+            row, (float(row.get("c1") or 0.0), float(row.get("c2") or 0.0))
+        ),
+    )
+
+
+def _observation_from_record(row: dict) -> SaturationObservation:
+    max_delay = row.get("max_delay_s")
+    return SaturationObservation(
+        stars=int(row["S"]),
+        p30_all=float(row["p30_all"]),
+        candidate_key=row["candidate_key"],
+        p30_reachable=float(row["p30_reachable"]),
+        c1=float(row["c1"]),
+        c2=float(row["c2"]),
+        max_delay_s=None if max_delay is None else float(max_delay),
+    )
+
+
+def _run_saturation(
+    args, mother, fidelities, config, simulation, digest, checkpoint_path,
+    completed, persisted, timing_rows, layer_rows, sequence_counter, summary_extra,
+) -> tuple["SaturationDecision", list[SaturationObservation]]:
+    search = _saturation_search_config(args, config, simulation)
+    observations: list[SaturationObservation] = []
+    for layer in generate_mn_layers(search):
+        if (layer.star_count - args.s_lb) % args.s_step:
+            continue
+        terminal = _evaluate_layer_through_high(
+            layer, args, mother, fidelities, config, simulation, digest,
+            checkpoint_path, completed, persisted, timing_rows, sequence_counter,
+        )
+        best = _best_verified_high_record(terminal)
+        layer_rows.append(_layer_row(
+            "saturation", layer.star_count,
+            "verified" if best is not None else "inconclusive",
+            list(terminal.values()),
+        ))
+        if best is None:
+            continue
+        observations.append(_observation_from_record(best))
+        decision = first_saturation_decision(
+            observations, forward_window_s=args.forward_window_s,
+            max_gain=args.max_window_gain, max_gain_per_100=args.max_gain_per_100,
+        )
+        if decision.status == "saturated":
+            summary_extra["layers_sampled"] = len(observations)
+            return decision, observations
+    summary_extra["layers_sampled"] = len(observations)
+    return (
+        first_saturation_decision(
+            observations, forward_window_s=args.forward_window_s,
+            max_gain=args.max_window_gain, max_gain_per_100=args.max_gain_per_100,
+        ),
+        observations,
+    )
+
+
+def _curve_row_from_observation(obs: SaturationObservation) -> dict:
+    planes, sats_per_plane, phase_factor, inclination, _raan0, u0 = json.loads(obs.candidate_key)
+    return {
+        "S": obs.stars,
+        "candidate_key": obs.candidate_key,
+        "M": planes,
+        "N": sats_per_plane,
+        "F": phase_factor,
+        "i": inclination,
+        "u0": u0,
+        "c1": obs.c1,
+        "c2": obs.c2,
+        "p30_all": obs.p30_all,
+        "p30_reachable": obs.p30_reachable,
+        "max_delay_s": obs.max_delay_s,
+    }
+
+
+def _observation_summary(obs: SaturationObservation) -> dict:
+    return _curve_row_from_observation(obs)
+
+
+def _decision_summary(decision) -> dict:
+    return {
+        "status": decision.status,
+        "selected": None if decision.selected is None else _observation_summary(decision.selected),
+        "window_end_stars": decision.window_end_stars,
+        "window_max_p30_all": decision.window_max_p30_all,
+        "window_gain": decision.window_gain,
+        "gain_per_100_stars": decision.gain_per_100_stars,
+    }
+
+
+def _saturation_claim(status: str) -> str:
+    return {
+        "saturated": "saturated_minimum",
+        "not_saturated": "not_saturated",
+        "insufficient_horizon": "insufficient_horizon",
+    }.get(status, status)
 
 
 def _evaluate_stage_batch(
@@ -591,7 +805,7 @@ def _empty_state(mother):
 def _digest_config(args, config, simulation, mother, fidelities):
     return {
         "schema_version": SCHEMA_VERSION,
-        "thresholds": {"c1_min": 0.999, "c2_min": 0.95, "eta_reach": 0.999, "eta_all": 0.95},
+        "thresholds": {"c1_min": 0.999, "c2_min": 0.95},
         "model_constants": asdict(config),
         "simulation": asdict(simulation),
         "region": {"lat": [4.0, 53.0], "lon": [73.0, 135.0]},
@@ -618,6 +832,10 @@ def _digest_config(args, config, simulation, mother, fidelities):
             "inclinations_deg": args.inclinations_deg,
             "u0_divisions": args.u0_divisions,
             "keep_low": args.keep_low, "keep_medium": args.keep_medium,
+            "s_step": args.s_step,
+            "forward_window_s": args.forward_window_s,
+            "max_window_gain": args.max_window_gain,
+            "max_gain_per_100": args.max_gain_per_100,
         },
     }
 
@@ -658,6 +876,14 @@ def _validate_args(args, parser):
         parser.error("--workers must be positive")
     if args.s_lb <= 0 or args.s_max < args.s_lb:
         parser.error("invalid satellite bounds")
+    if args.s_step <= 0:
+        parser.error("--s-step must be a positive integer")
+    if args.forward_window_s <= 0:
+        parser.error("--forward-window-s must be a positive integer")
+    for name in ("max_window_gain", "max_gain_per_100"):
+        value = getattr(args, name)
+        if not math.isfinite(value) or value < 0:
+            parser.error(f"--{name.replace('_', '-')} must be finite and nonnegative")
     if args.m_min <= 0 or args.m_max < args.m_min or args.n_min <= 0 or args.n_max < args.n_min:
         parser.error("invalid M/N bounds")
     if args.u0_divisions <= 0 or args.keep_low < 0 or args.keep_medium < 0:
@@ -707,6 +933,9 @@ def _write_csv(path, columns, rows):
 
 
 def _write_report(path, summary):
+    if summary.get("mode") == "saturation":
+        _write_saturation_report(path, summary)
+        return
     thresholds = summary["thresholds"]
     samples = summary["sample_counts"]
     best = summary["best_candidate"]
@@ -715,12 +944,51 @@ def _write_report(path, summary):
         f"- Claim: `{summary['claim']}`",
         f"- Layer status: `{summary['layer_status']}`",
         f"- Elapsed: {summary['elapsed_s']:.6f} s",
-        f"- Thresholds: C1 >= {thresholds['c1_min']}, C2 >= {thresholds['c2_min']}, P30(reachable) >= {thresholds['eta_reach']}, P30(all) >= {thresholds['eta_all']}",
+        f"- Thresholds: C1 >= {thresholds['c1_min']}, C2 >= {thresholds['c2_min']}",
         f"- Samples: {samples['times']} times, {samples['coverage_points']} coverage points, {samples['communication_points']} communication points",
         f"- Reachable samples: {samples['reachable_count']}; n_max=floor(0.001*reachable_count)={samples['n_max']}",
         f"- Best candidate: `{json.dumps(best, ensure_ascii=False, sort_keys=True)}`" if best else "- Best candidate: none",
         "",
     ]
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _write_saturation_report(path, summary):
+    coverage = summary["coverage_constraints"]
+    window = summary["forward_window"]
+    samples = summary["sample_counts"]
+    decision = summary["saturation_decision"]
+    best = summary["best_candidate"]
+    status = decision["status"]
+    lines = [
+        "# Q3 Performance-Saturation Search Report", "",
+        f"- Claim: `{summary['claim']}`",
+        f"- Objective: `{summary['objective']}` (maximize P30(all); tie-break by P30(reachable), then smaller max delay)",
+        f"- Coverage hard constraints: C1 >= {coverage['c1_min']}, C2 >= {coverage['c2_min']}",
+        f"- Forward-window parameters: s_step={window['s_step']}, forward_window_s={window['forward_window_s']}, "
+        f"max_window_gain={window['max_window_gain']}, max_gain_per_100={window['max_gain_per_100']}",
+        f"- Samples: {samples['times']} times, {samples['coverage_points']} coverage points, {samples['communication_points']} communication points",
+        f"- Decision status: `{status}`",
+    ]
+    if status == "saturated" and best is not None:
+        lines.extend([
+            f"- Selected scale: S = {best['S']} satellites",
+            f"- Window end: {decision['window_end_stars']} satellites",
+            f"- Window maximum P30(all): {decision['window_max_p30_all']}",
+            f"- Cumulative window gain: {decision['window_gain']}",
+            f"- Gain per 100 satellites: {decision['gain_per_100_stars']}",
+        ])
+    elif status == "insufficient_horizon":
+        lines.append(
+            "- No decision: `insufficient_horizon` — the search did not extend at least "
+            f"forward_window_s={window['forward_window_s']} satellites past a candidate point."
+        )
+    else:  # not_saturated
+        lines.append(
+            "- No decision: `not_saturated` — every completed forward window exceeded the "
+            "approved marginal-gain limits."
+        )
+    lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
 
 

@@ -866,3 +866,64 @@ def test_communication_upper_bound_rejects_after_actual_routes(monkeypatch):
     )
     assert result.status == "rejected"
     assert result.message == "communication_upper_bound"
+
+
+# --- Task 1: pure saturation-decision module ---
+from q3_saturation import SaturationObservation, first_saturation_decision
+
+
+def test_first_saturation_accepts_exact_one_percentage_point_gain():
+    data = [
+        SaturationObservation(1700, 0.86, "a", 0.90, 1.0, 0.97, 0.04),
+        SaturationObservation(1800, 0.865, "b", 0.90, 1.0, 0.97, 0.04),
+        SaturationObservation(1900, 0.87, "c", 0.90, 1.0, 0.97, 0.04),
+    ]
+    result = first_saturation_decision(data)
+    assert result.status == "saturated"
+    assert result.selected.stars == 1700
+    assert result.window_gain == pytest.approx(0.01)
+
+
+def test_first_saturation_requires_a_complete_200_satellite_horizon():
+    data = [SaturationObservation(1700, 0.86, "a", 0.9, 1.0, 0.97, 0.04)]
+    result = first_saturation_decision(data)
+    assert result.status == "insufficient_horizon"
+    assert result.selected is None
+
+
+def test_first_saturation_skips_an_early_window_with_excess_gain():
+    data = [
+        SaturationObservation(1700, .86, "a", .9, 1., .97, .04),
+        SaturationObservation(1900, .88, "b", .9, 1., .97, .04),
+        SaturationObservation(1920, .88, "c", .9, 1., .97, .04),
+        SaturationObservation(2120, .885, "d", .9, 1., .97, .04),
+    ]
+    assert first_saturation_decision(data).selected.stars == 1900
+
+
+def test_first_saturation_reports_not_saturated_when_all_windows_fail():
+    data = [
+        SaturationObservation(1700, .80, "a", .9, 1., .97, .04),
+        SaturationObservation(1900, .90, "b", .9, 1., .97, .04),
+    ]
+    result = first_saturation_decision(data)
+    assert result.status == "not_saturated"
+    assert result.selected is None
+
+
+def test_first_saturation_rejects_non_increasing_stars():
+    data = [
+        SaturationObservation(1700, .86, "a", .9, 1., .97, .04),
+        SaturationObservation(1700, .87, "b", .9, 1., .97, .04),
+    ]
+    with pytest.raises(ValueError):
+        first_saturation_decision(data)
+
+
+def test_first_saturation_rejects_non_finite_fields():
+    data = [
+        SaturationObservation(1700, float("nan"), "a", .9, 1., .97, .04),
+        SaturationObservation(1900, .87, "b", .9, 1., .97, .04),
+    ]
+    with pytest.raises(ValueError):
+        first_saturation_decision(data)

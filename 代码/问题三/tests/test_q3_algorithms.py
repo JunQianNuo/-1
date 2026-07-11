@@ -18,6 +18,16 @@ from q3_statistics import delay_statistics
 from q3_traffic import baseline_loads, uniform_od_demand
 from q3_optimization import candidate_paths, multipath_flow_lp, throughput_binary_search
 from q3_pipeline import run_snapshot
+from q3_joint_search import (
+    CommunicationEvaluation,
+    CoverageEvaluation,
+    JointSearchConfig,
+    coverage_upper_bounds,
+    generate_mn_layers,
+    optimistic_delay_lower_bounds,
+    search_constellations,
+    u0_periodic_grid,
+)
 
 
 def test_simulation_config_defaults_to_nearest_inter_plane_links():
@@ -52,6 +62,105 @@ def test_run_snapshot_uses_simulation_topology_method(monkeypatch):
     run_snapshot(params, t_s=0.0, ground_points_ecef_km=ground, config=cfg, simulation=sim)
 
     assert captured["method"] == "nearest"
+
+
+def test_generate_mn_layers_sorts_realizable_pairs_and_prunes_intra_distance():
+    """联合搜索应按可实现星数排序，并先剪去同轨链路必断的 N。"""
+
+    cfg = Q3Config(earth_radius_km=10.0, altitude_km=0.0, isl_max_distance_km=10.5)
+    search = JointSearchConfig(
+        s_lb=10,
+        s_max=24,
+        m_values=range(1, 5),
+        n_values=range(2, 7),
+        inclinations_deg=(0.0,),
+        q3_config=cfg,
+    )
+
+    layers = generate_mn_layers(search)
+
+    assert [layer.star_count for layer in layers] == [12, 18, 24]
+    assert [layer.pairs for layer in layers] == [[(2, 6)], [(3, 6)], [(4, 6)]]
+
+
+def test_u0_periodic_grid_only_spans_one_satellite_spacing():
+    """u0 只需搜索一个同轨卫星间隔 [0, 360/N)。"""
+
+    values = u0_periodic_grid(sats_per_plane=40, divisions=4)
+
+    assert values == pytest.approx([0.0, 2.25, 4.5, 6.75])
+
+
+def test_coverage_upper_bounds_support_strict_early_rejection():
+    """覆盖评价上界低于阈值时，可以无漏解提前终止。"""
+
+    c1_upper, c2_upper = coverage_upper_bounds(
+        total_samples=100,
+        processed_samples=60,
+        single_hits=59,
+        double_hits=50,
+    )
+
+    assert c1_upper == pytest.approx(0.99)
+    assert c2_upper == pytest.approx(0.90)
+    assert c1_upper < 0.999
+    assert c2_upper < 0.95
+
+
+def test_optimistic_delay_lower_bounds_detect_strict_impossibility():
+    """若直连乐观下界已超过 30ms，则真实网络最短路必然不满足严格口径。"""
+
+    sat = np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]])
+    ground = np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]])
+    bounds = optimistic_delay_lower_bounds(
+        access_sets=[[0], [1]],
+        satellite_ecef_km=sat,
+        ground_points_ecef_km=ground,
+        od_pairs=[(0, 1)],
+        c_km_s=1.0,
+        processing_delay_s=0.0,
+    )
+
+    assert bounds[(0, 1)] == pytest.approx(10.0)
+
+
+def test_joint_search_finishes_current_star_layer_and_selects_robust_candidate():
+    """第一个可行星数层内应完成全部候选复核，再选鲁棒裕量最大者。"""
+
+    cfg = Q3Config(earth_radius_km=1.0, altitude_km=0.0, isl_max_distance_km=2.0)
+    search = JointSearchConfig(
+        s_lb=6,
+        s_max=6,
+        m_values=(2, 3),
+        n_values=(3, 2),
+        phase_values=(0,),
+        inclinations_deg=(0.0,),
+        u0_divisions=1,
+        q3_config=cfg,
+    )
+    seen: list[tuple[int, int]] = []
+
+    def coverage(_params):
+        return CoverageEvaluation(c1=1.0, c2=1.0, feasible=True)
+
+    def communication(params):
+        seen.append((params.planes, params.sats_per_plane))
+        margin = 0.20 if params.planes == 3 else 0.10
+        return CommunicationEvaluation(
+            feasible=True,
+            p30=1.0,
+            max_delay_s=0.030 - margin / 100.0,
+            unreachable_rate=0.0,
+            robustness_margin=margin,
+        )
+
+    result = search_constellations(search, coverage, communication)
+
+    assert result.feasible
+    assert result.params is not None
+    assert result.params.planes == 3
+    assert result.params.sats_per_plane == 2
+    assert set(seen) == {(2, 3), (3, 2)}
 
 
 def test_orbit_propagation_preserves_orbital_radius_and_shape():
@@ -105,6 +214,45 @@ def test_multi_source_dijkstra_and_shortest_path_reconstructs_expected_route():
     assert dist[3] == pytest.approx(4.0)
     assert shortest_path(pred, 0, 3) == [0, 1, 2, 3]
     assert root[3] == 0
+
+
+def test_weighted_graph_keeps_adjacency_index_for_fast_neighbors():
+    """neighbors 查询应由邻接表支持，避免 Dijkstra 反复扫描全边集。"""
+
+    graph = WeightedGraph(4)
+    graph.add_edge(0, 1, 5.0)
+    graph.add_edge(0, 1, 3.0)
+    graph.add_edge(0, 2, 2.0)
+
+    assert hasattr(graph, "_adj")
+    assert sorted(graph.neighbors(0)) == [(1, 3.0), (2, 2.0)]
+    assert graph.degrees()[0] == 2
+
+
+def test_nearest_topology_uses_kdtree_for_inter_plane_links(monkeypatch):
+    """nearest 拓扑应使用 KDTree 批量求相邻轨道面的最近卫星。"""
+
+    import q3_topology
+
+    calls: list[tuple[str, tuple[int, ...], int | None]] = []
+
+    class FakeTree:
+        def __init__(self, data):
+            calls.append(("init", np.asarray(data).shape, None))
+
+        def query(self, points, k=1):
+            point_array = np.asarray(points)
+            calls.append(("query", point_array.shape, k))
+            return np.zeros(point_array.shape[0]), np.zeros(point_array.shape[0], dtype=int)
+
+    monkeypatch.setattr(q3_topology, "cKDTree", FakeTree, raising=False)
+    params = ConstellationParams(planes=2, sats_per_plane=3, phase_factor=0, inclination_deg=20.0)
+    cfg = Q3Config(isl_max_distance_km=1e9)
+    r_eci, _ = satellite_positions(params, 0.0, cfg)
+
+    build_isl_graph(r_eci, params, config=cfg, method="nearest")
+
+    assert ("query", (params.sats_per_plane, 3), 1) in calls
 
 
 def test_min_delay_routes_chooses_best_access_satellites():

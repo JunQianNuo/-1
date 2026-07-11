@@ -30,6 +30,7 @@ class WeightedGraph:
             raise ValueError("node_count must be non-negative")
         self.node_count = int(node_count)
         self._edges: dict[tuple[int, int], GraphEdge] = {}
+        self._adj: list[dict[int, GraphEdge]] = [dict() for _ in range(self.node_count)]
 
     def add_edge(self, u: int, v: int, weight_s: float, distance_km: float = 0.0) -> None:
         if u == v:
@@ -41,11 +42,15 @@ class WeightedGraph:
         key = normalized_edge(u, v)
         old = self._edges.get(key)
         if old is None or weight_s < old.weight_s:
-            self._edges[key] = GraphEdge(key[0], key[1], float(weight_s), float(distance_km))
+            edge = GraphEdge(key[0], key[1], float(weight_s), float(distance_km))
+            self._edges[key] = edge
+            self._adj[edge.u][edge.v] = edge
+            self._adj[edge.v][edge.u] = edge
 
     def copy(self) -> "WeightedGraph":
         new = WeightedGraph(self.node_count)
-        new._edges = dict(self._edges)
+        for edge in self._edges.values():
+            new.add_edge(edge.u, edge.v, edge.weight_s, edge.distance_km)
         return new
 
     @property
@@ -57,20 +62,10 @@ class WeightedGraph:
 
     def neighbors(self, node: int) -> list[tuple[int, float]]:
         self._check_node(node)
-        out: list[tuple[int, float]] = []
-        for edge in self._edges.values():
-            if edge.u == node:
-                out.append((edge.v, edge.weight_s))
-            elif edge.v == node:
-                out.append((edge.u, edge.weight_s))
-        return out
+        return [(nbr, edge.weight_s) for nbr, edge in self._adj[node].items()]
 
     def degrees(self) -> dict[int, int]:
-        degree = {i: 0 for i in range(self.node_count)}
-        for edge in self._edges.values():
-            degree[edge.u] += 1
-            degree[edge.v] += 1
-        return degree
+        return {i: len(self._adj[i]) for i in range(self.node_count)}
 
     def _check_node(self, node: int) -> None:
         if not 0 <= node < self.node_count:

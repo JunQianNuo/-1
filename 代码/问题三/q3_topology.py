@@ -3,11 +3,91 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass
+import math
 
 import numpy as np
 
 from q3_config import ConstellationParams, Q3Config
 from q3_routing import WeightedGraph
+
+
+@dataclass(frozen=True)
+class _KDNode:
+    index: int
+    axis: int
+    left: "_KDNode | None" = None
+    right: "_KDNode | None" = None
+
+
+class cKDTree:
+    """Small cKDTree-compatible 3D nearest-neighbor index.
+
+    The project only needs ``query(points, k=1)`` for tens of satellites per
+    plane.  A local KD-tree avoids making topology construction depend on a
+    heavy import path while preserving the same call shape as
+    ``scipy.spatial.cKDTree``.
+    """
+
+    def __init__(self, data: np.ndarray):
+        points = np.asarray(data, dtype=float)
+        if points.ndim != 2:
+            raise ValueError("KDTree data must be a 2D array")
+        self.data = points
+        self._root = self._build(list(range(points.shape[0])), depth=0)
+
+    def query(self, points: np.ndarray, k: int = 1) -> tuple[np.ndarray, np.ndarray]:
+        if k != 1:
+            raise NotImplementedError("this lightweight KDTree only supports k=1")
+        query_points = np.asarray(points, dtype=float)
+        if query_points.ndim == 1:
+            dist, idx = self._query_one(query_points)
+            return np.asarray(dist), np.asarray(idx)
+        distances: list[float] = []
+        indices: list[int] = []
+        for point in query_points:
+            dist, idx = self._query_one(point)
+            distances.append(dist)
+            indices.append(idx)
+        return np.asarray(distances, dtype=float), np.asarray(indices, dtype=int)
+
+    def _build(self, indices: list[int], depth: int) -> _KDNode | None:
+        if not indices:
+            return None
+        axis = depth % self.data.shape[1]
+        indices.sort(key=lambda idx: self.data[idx, axis])
+        mid = len(indices) // 2
+        return _KDNode(
+            index=indices[mid],
+            axis=axis,
+            left=self._build(indices[:mid], depth + 1),
+            right=self._build(indices[mid + 1 :], depth + 1),
+        )
+
+    def _query_one(self, point: np.ndarray) -> tuple[float, int]:
+        best_dist2 = math.inf
+        best_idx = -1
+
+        def visit(node: _KDNode | None) -> None:
+            nonlocal best_dist2, best_idx
+            if node is None:
+                return
+            diff_vec = point - self.data[node.index]
+            dist2 = float(diff_vec @ diff_vec)
+            if dist2 < best_dist2:
+                best_dist2 = dist2
+                best_idx = node.index
+
+            axis = node.axis
+            split = float(point[axis] - self.data[node.index, axis])
+            near = node.left if split < 0 else node.right
+            far = node.right if split < 0 else node.left
+            visit(near)
+            if split * split < best_dist2:
+                visit(far)
+
+        visit(self._root)
+        return math.sqrt(best_dist2), best_idx
 
 
 def satellite_id(plane: int, sat_in_plane: int, sats_per_plane: int) -> int:
@@ -52,10 +132,13 @@ def build_isl_graph(
             next_m = (m + 1) % M
             next_ids = [satellite_id(next_m, r, N) for r in range(N)]
             next_pos = positions[next_ids]
-            for n in range(N):
+            current_ids = [satellite_id(m, n, N) for n in range(N)]
+            current_pos = positions[current_ids]
+            tree = cKDTree(next_pos)
+            _distances, nearest_indices = tree.query(current_pos, k=1)
+            for n, nearest_idx in enumerate(np.asarray(nearest_indices, dtype=int)):
                 u = satellite_id(m, n, N)
-                distances = np.linalg.norm(next_pos - positions[u], axis=1)
-                v = next_ids[int(np.argmin(distances))]
+                v = next_ids[int(nearest_idx)]
                 candidates.add(_ordered_pair(u, v))
     else:
         raise ValueError("method must be 'walker', 'nearest', or 'kd_tree'")

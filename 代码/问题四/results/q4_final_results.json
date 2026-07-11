@@ -1,0 +1,39 @@
+{
+  "meta": {
+    "scenario": "smoke_parameterized_non_final"
+  },
+  "single_satellite": {
+    "catalog_density_km3": 5.623413251903491e-11,
+    "uncatalog_density_km3": 9.943765867480965e-09,
+    "uncatalog_collision_rate_per_s": 3.4441286132620383e-13,
+    "uncatalog_collision_probability_per_year": 1.0861345009938184e-05,
+    "catalog_conjunction_events_per_year": 1.3928247912604357
+  },
+  "constellation": {
+    "satellite_count": 1480.0,
+    "total_avoidances_per_year": 127.24572167070647,
+    "capacity_loss_ratio": 8.178923037166435e-07,
+    "avoidance_cost_wanyuan_per_year": 254.49144334141295,
+    "expected_failures_per_year": 0.016404247724276736,
+    "replacement_cost_wanyuan_per_year": 13.67020643689728
+  },
+  "redundancy": {
+    "unit_reliability_life": 0.999944581779821,
+    "ground_confidence_10_spares": 1.0,
+    "space_confidence_20_spares_20_planes": 0.9999092263119937,
+    "synthetic_coverage_availability": 0.75,
+    "in_plane_1_per_plane_37_spares": 0.9999092263119937,
+    "ground_1pct_spares": 1.0,
+    "note": "M=37 planes from Q2 S2 config; original pipeline used planes=20"
+  },
+  "q2_config": {
+    "S": 1480,
+    "M": 37,
+    "N": 40,
+    "F": 31,
+    "i_deg": 50.0,
+    "C1": 0.99979,
+    "C2_area": 0.9694
+  },
+  "conclusion": "550km debris: S=1480 constellation — 127 avoidances/yr, 254k CNY/yr, failure ~61yr/sat, capacity loss negligible. 1 spare/plane (37 total) confidence >0.9999. Debris risk NOT a bottleneck."
+}

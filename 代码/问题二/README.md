@@ -20,7 +20,7 @@
 | `run_q2_fast_search.py` | 快速筛选搜索入口（`--fix-raan0`、`--critical-min` 开关）|
 | `run_q2_fullday_scan.py` | 整恒星日 grid 扫描器（best-per-S，R02 固定 Ω₀），早期定位入口 |
 | `run_q2_free_search.py` | **权威搜索入口**：$N$ 完全放开（全因子对）+ F 采样邻域细化 + 多保真（4°/900s 粗筛→2°/300s→1°/150s），求 S₁(单重)/S₂(单+二重) |
-| `q2_bilp_setcover.py` | **替代算法**：BILP 0-1 集合覆盖最少卫星（LP 松弛下界 + 贪心 + HiGHS milp + CGT）；见 [[问题分析/星链系统-文献驱动版/问题2-BILP集合覆盖尝试与下界评估]] |
+| `q2_bilp_setcover.py` | **替代算法探索**：BILP 0-1 集合覆盖最少卫星（LP 松弛下界≈1010 + 贪心 + HiGHS milp + CGT）。结论：本题规模精确不可解、贪心不敌 Walker、CGT 宽区域无解 → 不实用，唯一价值是 LP 下界 |
 | `test_q2_constellation.py` / `test_q2_fast_coverage.py` / `test_q2_fast_search.py` | 基础与快速搜索单元测试 |
 | `test_q2_relaxation.py` | R02 时移等价、R07 子集、R01 证伪等测试 |
 | `test_q2_lipschitz_certificate.py` | R05 证书：$L_x,L_t$ 真上界抽验、三分类逻辑 |

@@ -1,0 +1,63 @@
+{
+  "best_candidate": {
+    "F": 21,
+    "M": 35,
+    "N": 48,
+    "S": 1680,
+    "c1": 0.99999512895823,
+    "c2": 0.995902029308706,
+    "candidate_key": "[35,48,21,50.0,0.0,0.0]",
+    "i": 50.0,
+    "max_delay_s": 0.08373698586264822,
+    "p30_all": 0.8564212703336913,
+    "p30_reachable": 0.8564212703336913,
+    "u0": 0.0
+  },
+  "candidate_stage_records": 5552,
+  "claim": "saturated_minimum",
+  "config_digest": "24ab172f8e63d9c4229084d5b9a2625cba9c50b63297055697d9d961f5f93a37",
+  "coverage_constraints": {
+    "c1_min": 0.999,
+    "c2_min": 0.95
+  },
+  "elapsed_s": 23677.0494787,
+  "forward_window": {
+    "forward_window_s": 200,
+    "max_gain_per_100": 0.005,
+    "max_window_gain": 0.01,
+    "s_step": 20
+  },
+  "layer_status": "verified",
+  "layers_sampled": 18,
+  "mode": "saturation",
+  "objective": "p30_all_saturation",
+  "observation_count": 18,
+  "sample_counts": {
+    "communication_points": 30,
+    "coverage_points": 832,
+    "times": 289
+  },
+  "saturation_decision": {
+    "gain_per_100_stars": 0.0023545320765222533,
+    "selected": {
+      "F": 21,
+      "M": 35,
+      "N": 48,
+      "S": 1680,
+      "c1": 0.99999512895823,
+      "c2": 0.995902029308706,
+      "candidate_key": "[35,48,21,50.0,0.0,0.0]",
+      "i": 50.0,
+      "max_delay_s": 0.08373698586264822,
+      "p30_all": 0.8564212703336913,
+      "p30_reachable": 0.8564212703336913,
+      "u0": 0.0
+    },
+    "status": "saturated",
+    "window_end_stars": 1880,
+    "window_gain": 0.0047090641530445065,
+    "window_max_p30_all": 0.8611303344867358
+  },
+  "schema_version": "q3-joint-v1",
+  "search_claim": "saturated_minimum"
+}

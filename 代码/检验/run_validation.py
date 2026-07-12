@@ -16,6 +16,7 @@ from common import (
     write_json,
     write_rows_csv,
 )
+from final_figures import generate_final_figure
 
 
 bootstrap_problem_paths()
@@ -33,7 +34,11 @@ from q3_config import (  # noqa: E402
     SimulationConfig,
 )
 from q3_joint_evaluator import FidelityGrid, MotherGrid  # noqa: E402
-from q3_orbit import ground_ecef  # noqa: E402
+from q3_orbit import (  # noqa: E402
+    ground_ecef,
+    make_latlon_grid as make_q3_latlon_grid,
+    make_time_grid as make_q3_time_grid,
+)
 from q3_validation import (  # noqa: E402
     bootstrap_time_blocks,
     evaluate_q3_time_block_rates,
@@ -163,28 +168,36 @@ def run_q2_validation(output_dir: str | Path, *, replicates: int, seed: int, qui
         },
         "interpretation_limit": "Monte Carlo estimates sampled coverage fractions; it is not a proof of continuous strict coverage.",
     }
+    summary["final_figure"] = str(generate_final_figure("q2", Path(output_dir)))
     write_json(target / "summary.json", summary)
     _write_plot(target / "sensitivity.png", sensitivity_rows, "C1", "Q2 sensitivity: C1")
     return summary
 
 
 def _q3_mother_grid(quick: bool, config: Q3Config) -> tuple[MotherGrid, FidelityGrid]:
-    lat_axis = np.array([4.0, 53.0]) if quick else np.linspace(4.0, 53.0, 7)
-    lon_axis = np.array([73.0, 135.0]) if quick else np.linspace(73.0, 135.0, 9)
-    lon_grid, lat_grid = np.meshgrid(lon_axis, lat_axis)
-    coverage_ecef = ground_ecef(lat_grid.ravel(), lon_grid.ravel(), radius_km=config.earth_radius_km)
+    if quick:
+        lat_axis = np.array([4.0, 53.0])
+        lon_axis = np.array([73.0, 135.0])
+        lon_grid, lat_grid = np.meshgrid(lon_axis, lat_axis)
+        cov_lat, cov_lon = lat_grid.ravel(), lon_grid.ravel()
+        comm_lat = np.array([4.0, 4.0, 53.0, 53.0])
+        comm_lon = np.array([73.0, 135.0, 73.0, 135.0])
+        times_s = np.array([0.0, 43_082.045])
+    else:
+        # Independent standard validation grid.  The archived saturation
+        # output retains only sample counts, not its communication coordinates;
+        # this explicit 2°/15°/300 s lattice is therefore not claimed as an
+        # exact coordinate-by-coordinate reproduction of that archived run.
+        cov_lat, cov_lon = make_q3_latlon_grid(4.0, 53.0, 73.0, 135.0, 2.0)
+        comm_lat, comm_lon = make_q3_latlon_grid(4.0, 53.0, 73.0, 135.0, 15.0)
+        times_s = make_q3_time_grid(86_164.09, 300.0)
+    coverage_ecef = ground_ecef(cov_lat, cov_lon, radius_km=config.earth_radius_km)
     coverage_unit = coverage_ecef / np.linalg.norm(coverage_ecef, axis=1)[:, None]
-    comm_lat = np.array([4.0, 4.0, 53.0, 53.0])
-    comm_lon = np.array([73.0, 135.0, 73.0, 135.0])
-    if not quick:
-        comm_lat = np.append(comm_lat, 28.5)
-        comm_lon = np.append(comm_lon, 104.0)
     communication_ecef = ground_ecef(comm_lat, comm_lon, radius_km=config.earth_radius_km)
-    times_s = np.array([0.0, 43_082.045]) if quick else np.linspace(0.0, 86_164.09, 12, endpoint=False)
     mother = MotherGrid(
         times_s=times_s,
         coverage_ground_unit=coverage_unit,
-        coverage_weights=np.full(len(coverage_unit), 1.0 / len(coverage_unit)),
+        coverage_weights=np.cos(np.deg2rad(cov_lat)),
         communication_ground_ecef_km=communication_ecef,
     )
     fidelity = FidelityGrid(
@@ -246,6 +259,7 @@ def run_q3_validation(output_dir: str | Path, *, replicates: int, seed: int, qui
         },
         "interpretation_limit": "The time-block bootstrap quantifies model-sample variability, not an observational confidence interval.",
     }
+    summary["final_figure"] = str(generate_final_figure("q3", Path(output_dir)))
     write_json(target / "summary.json", summary)
     _write_plot(target / "sensitivity.png", sensitivity_rows, "p30_all", "Q3 sensitivity: P30(all)")
     return summary
@@ -311,6 +325,7 @@ def run_q4_validation(output_dir: str | Path, *, replicates: int, seed: int, qui
         },
         "interpretation_limit": "This remains a calibrated-scenario analysis until real coverage time series and communication-capacity inputs replace the smoke coupling.",
     }
+    summary["final_figure"] = str(generate_final_figure("q4", Path(output_dir)))
     write_json(target / "summary.json", summary)
     _write_plot(target / "sensitivity.png", sensitivity_rows, "annual_avoidances", "Q4 sensitivity: annual avoidances")
     return summary

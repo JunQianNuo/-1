@@ -1,0 +1,29 @@
+{
+  "bootstrap_p30_all": {
+    "S1540": {
+      "mean": 0.8110402736348089,
+      "p2_5": 0.8086888994948893,
+      "p97_5": 0.8130813745376447
+    },
+    "S1680": {
+      "mean": 0.8216451497434673,
+      "p2_5": 0.8201923000437498,
+      "p97_5": 0.8230495565366106
+    },
+    "S1760": {
+      "mean": 0.8296686950642327,
+      "p2_5": 0.8284948096885814,
+      "p97_5": 0.8307608479497276
+    }
+  },
+  "final_figure": "检验\\results\\final\\figures\\fig_q3_validation.png",
+  "interpretation_limit": "The time-block bootstrap quantifies model-sample variability, not an observational confidence interval.",
+  "mode": "standard",
+  "mother_grid": {
+    "communication_points": 30,
+    "coverage_points": 832,
+    "time_snapshots": 289
+  },
+  "question": "q3",
+  "seed": 20260712
+}

@@ -1,0 +1,73 @@
+{
+  "annual_event_monte_carlo": {
+    "q2_double_S1480": {
+      "avoidances": {
+        "mean": 150.6434,
+        "p2_5": 127.0,
+        "p97_5": 175.0
+      },
+      "conjunctions": {
+        "mean": 2061.1335,
+        "p2_5": 1973.0,
+        "p97_5": 2151.0
+      },
+      "failures": {
+        "mean": 0.0188,
+        "p2_5": 0.0,
+        "p97_5": 0.0
+      },
+      "replicates": 10000
+    },
+    "q2_single_S1302": {
+      "avoidances": {
+        "mean": 132.7524,
+        "p2_5": 110.0,
+        "p97_5": 156.0
+      },
+      "conjunctions": {
+        "mean": 1813.5927,
+        "p2_5": 1731.0,
+        "p97_5": 1898.0
+      },
+      "failures": {
+        "mean": 0.0126,
+        "p2_5": 0.0,
+        "p97_5": 0.0
+      },
+      "replicates": 10000
+    },
+    "q3_saturation_S1680": {
+      "avoidances": {
+        "mean": 171.4238,
+        "p2_5": 146.0,
+        "p97_5": 198.0
+      },
+      "conjunctions": {
+        "mean": 2339.8761,
+        "p2_5": 2244.0,
+        "p97_5": 2435.0
+      },
+      "failures": {
+        "mean": 0.0181,
+        "p2_5": 0.0,
+        "p97_5": 0.0
+      },
+      "replicates": 10000
+    }
+  },
+  "environment": {
+    "beta": 2.25,
+    "catalog_threshold_cm": 10.0,
+    "debris_diameter_cm": 10.0,
+    "relative_speed_km_s": 10.0,
+    "satellite_radius_km": 0.001,
+    "screening_radius_km": 5.0,
+    "total_density_gt_1cm_km3": 1e-08,
+    "year_s": 31536000.0
+  },
+  "final_figure": "检验\\results\\final\\figures\\fig_q4_validation.png",
+  "interpretation_limit": "This remains a calibrated-scenario analysis until real coverage time series and communication-capacity inputs replace the smoke coupling.",
+  "mode": "standard",
+  "question": "q4",
+  "seed": 20260712
+}

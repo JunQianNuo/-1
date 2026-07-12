@@ -1,0 +1,146 @@
+{
+  "quick": false,
+  "results": {
+    "q2": {
+      "final_figure": "检验\\results\\final\\figures\\fig_q2_validation.png",
+      "grid": {
+        "points": 396,
+        "times": 145
+      },
+      "interpretation_limit": "Monte Carlo estimates sampled coverage fractions; it is not a proof of continuous strict coverage.",
+      "mode": "standard",
+      "monte_carlo": {
+        "double_S1480": {
+          "C1": {
+            "mean": 0.9997236301210443,
+            "p2_5": 0.9992388774175497,
+            "p97_5": 1.0000000000000002
+          },
+          "C2": {
+            "mean": 0.9667549270325381,
+            "p2_5": 0.9582723019077292,
+            "p97_5": 0.9722706760435758
+          },
+          "replicates": 30
+        },
+        "single_S1302": {
+          "C1": {
+            "mean": 0.9993452223123961,
+            "p2_5": 0.9981405560529608,
+            "p97_5": 0.9998573993387091
+          },
+          "C2": {
+            "mean": 0.7793785030092262,
+            "p2_5": 0.7578632721004778,
+            "p97_5": 0.7958278459321327
+          },
+          "replicates": 30
+        }
+      },
+      "question": "q2",
+      "seed": 20260712
+    },
+    "q3": {
+      "bootstrap_p30_all": {
+        "S1540": {
+          "mean": 0.8110402736348089,
+          "p2_5": 0.8086888994948893,
+          "p97_5": 0.8130813745376447
+        },
+        "S1680": {
+          "mean": 0.8216451497434673,
+          "p2_5": 0.8201923000437498,
+          "p97_5": 0.8230495565366106
+        },
+        "S1760": {
+          "mean": 0.8296686950642327,
+          "p2_5": 0.8284948096885814,
+          "p97_5": 0.8307608479497276
+        }
+      },
+      "final_figure": "检验\\results\\final\\figures\\fig_q3_validation.png",
+      "interpretation_limit": "The time-block bootstrap quantifies model-sample variability, not an observational confidence interval.",
+      "mode": "standard",
+      "mother_grid": {
+        "communication_points": 30,
+        "coverage_points": 832,
+        "time_snapshots": 289
+      },
+      "question": "q3",
+      "seed": 20260712
+    },
+    "q4": {
+      "annual_event_monte_carlo": {
+        "q2_double_S1480": {
+          "avoidances": {
+            "mean": 150.6434,
+            "p2_5": 127.0,
+            "p97_5": 175.0
+          },
+          "conjunctions": {
+            "mean": 2061.1335,
+            "p2_5": 1973.0,
+            "p97_5": 2151.0
+          },
+          "failures": {
+            "mean": 0.0188,
+            "p2_5": 0.0,
+            "p97_5": 0.0
+          },
+          "replicates": 10000
+        },
+        "q2_single_S1302": {
+          "avoidances": {
+            "mean": 132.7524,
+            "p2_5": 110.0,
+            "p97_5": 156.0
+          },
+          "conjunctions": {
+            "mean": 1813.5927,
+            "p2_5": 1731.0,
+            "p97_5": 1898.0
+          },
+          "failures": {
+            "mean": 0.0126,
+            "p2_5": 0.0,
+            "p97_5": 0.0
+          },
+          "replicates": 10000
+        },
+        "q3_saturation_S1680": {
+          "avoidances": {
+            "mean": 171.4238,
+            "p2_5": 146.0,
+            "p97_5": 198.0
+          },
+          "conjunctions": {
+            "mean": 2339.8761,
+            "p2_5": 2244.0,
+            "p97_5": 2435.0
+          },
+          "failures": {
+            "mean": 0.0181,
+            "p2_5": 0.0,
+            "p97_5": 0.0
+          },
+          "replicates": 10000
+        }
+      },
+      "environment": {
+        "beta": 2.25,
+        "catalog_threshold_cm": 10.0,
+        "debris_diameter_cm": 10.0,
+        "relative_speed_km_s": 10.0,
+        "satellite_radius_km": 0.001,
+        "screening_radius_km": 5.0,
+        "total_density_gt_1cm_km3": 1e-08,
+        "year_s": 31536000.0
+      },
+      "final_figure": "检验\\results\\final\\figures\\fig_q4_validation.png",
+      "interpretation_limit": "This remains a calibrated-scenario analysis until real coverage time series and communication-capacity inputs replace the smoke coupling.",
+      "mode": "standard",
+      "question": "q4",
+      "seed": 20260712
+    }
+  }
+}

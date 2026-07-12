@@ -1,0 +1,133 @@
+{
+  "quick": true,
+  "results": {
+    "q2": {
+      "grid": {
+        "points": 42,
+        "times": 7
+      },
+      "interpretation_limit": "Monte Carlo estimates sampled coverage fractions; it is not a proof of continuous strict coverage.",
+      "mode": "quick",
+      "monte_carlo": {
+        "double_S1480": {
+          "C1": {
+            "mean": 1.0,
+            "p2_5": 1.0,
+            "p97_5": 1.0000000000000002
+          },
+          "C2": {
+            "mean": 0.9646255142652688,
+            "p2_5": 0.9436681783629702,
+            "p97_5": 0.9762504508315432
+          },
+          "replicates": 3
+        },
+        "single_S1302": {
+          "C1": {
+            "mean": 1.0,
+            "p2_5": 1.0,
+            "p97_5": 1.0
+          },
+          "C2": {
+            "mean": 0.7237755392622995,
+            "p2_5": 0.6782764724691708,
+            "p97_5": 0.7565148656576673
+          },
+          "replicates": 3
+        }
+      },
+      "question": "q2",
+      "seed": 20260712
+    },
+    "q3": {
+      "bootstrap_p30_all": {
+        "S1680": {
+          "mean": 0.2527777777777778,
+          "p2_5": 0.16666666666666666,
+          "p97_5": 0.3333333333333333
+        }
+      },
+      "interpretation_limit": "The time-block bootstrap quantifies model-sample variability, not an observational confidence interval.",
+      "mode": "quick",
+      "mother_grid": {
+        "communication_points": 4,
+        "coverage_points": 4,
+        "time_snapshots": 2
+      },
+      "question": "q3",
+      "seed": 20260712
+    },
+    "q4": {
+      "annual_event_monte_carlo": {
+        "q2_double_S1480": {
+          "avoidances": {
+            "mean": 149.78,
+            "p2_5": 127.9,
+            "p97_5": 173.52499999999998
+          },
+          "conjunctions": {
+            "mean": 2051.9,
+            "p2_5": 1958.475,
+            "p97_5": 2128.725
+          },
+          "failures": {
+            "mean": 0.02,
+            "p2_5": 0.0,
+            "p97_5": 0.0
+          },
+          "replicates": 100
+        },
+        "q2_single_S1302": {
+          "avoidances": {
+            "mean": 131.6,
+            "p2_5": 110.47500000000001,
+            "p97_5": 150.0
+          },
+          "conjunctions": {
+            "mean": 1817.32,
+            "p2_5": 1744.95,
+            "p97_5": 1891.525
+          },
+          "failures": {
+            "mean": 0.0,
+            "p2_5": 0.0,
+            "p97_5": 0.0
+          },
+          "replicates": 100
+        },
+        "q3_saturation_S1680": {
+          "avoidances": {
+            "mean": 172.64,
+            "p2_5": 147.475,
+            "p97_5": 200.52499999999998
+          },
+          "conjunctions": {
+            "mean": 2329.43,
+            "p2_5": 2243.75,
+            "p97_5": 2421.15
+          },
+          "failures": {
+            "mean": 0.02,
+            "p2_5": 0.0,
+            "p97_5": 0.0
+          },
+          "replicates": 100
+        }
+      },
+      "environment": {
+        "beta": 2.25,
+        "catalog_threshold_cm": 10.0,
+        "debris_diameter_cm": 10.0,
+        "relative_speed_km_s": 10.0,
+        "satellite_radius_km": 0.001,
+        "screening_radius_km": 5.0,
+        "total_density_gt_1cm_km3": 1e-08,
+        "year_s": 31536000.0
+      },
+      "interpretation_limit": "This remains a calibrated-scenario analysis until real coverage time series and communication-capacity inputs replace the smoke coupling.",
+      "mode": "quick",
+      "question": "q4",
+      "seed": 20260712
+    }
+  }
+}

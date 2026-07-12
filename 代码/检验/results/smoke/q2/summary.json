@@ -1,0 +1,38 @@
+{
+  "grid": {
+    "points": 42,
+    "times": 7
+  },
+  "interpretation_limit": "Monte Carlo estimates sampled coverage fractions; it is not a proof of continuous strict coverage.",
+  "mode": "quick",
+  "monte_carlo": {
+    "double_S1480": {
+      "C1": {
+        "mean": 1.0,
+        "p2_5": 1.0,
+        "p97_5": 1.0000000000000002
+      },
+      "C2": {
+        "mean": 0.9646255142652688,
+        "p2_5": 0.9436681783629702,
+        "p97_5": 0.9762504508315432
+      },
+      "replicates": 3
+    },
+    "single_S1302": {
+      "C1": {
+        "mean": 1.0,
+        "p2_5": 1.0,
+        "p97_5": 1.0
+      },
+      "C2": {
+        "mean": 0.7237755392622995,
+        "p2_5": 0.6782764724691708,
+        "p97_5": 0.7565148656576673
+      },
+      "replicates": 3
+    }
+  },
+  "question": "q2",
+  "seed": 20260712
+}
